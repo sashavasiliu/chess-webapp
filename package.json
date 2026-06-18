@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:app": "vite",
+    "dev:server": "tsc -p tsconfig.server.json && node --env-file=.env server-dist/server/evalServer.js",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview"

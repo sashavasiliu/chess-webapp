@@ -19,17 +19,17 @@
 }
 
 .game-layout {
-  width: min(100%, 960px);
+  width: min(100%, 992px);
   display: grid;
-  grid-template-columns: minmax(360px, 560px) 320px;
+  grid-template-columns: minmax(392px, 592px) 320px;
   align-items: start;
   justify-content: center;
   gap: 32px;
 }
 
 .board-column {
-  width: min(100%, 560px);
-  max-width: calc(100svh - 94px);
+  width: min(100%, 592px);
+  max-width: min(100%, calc(100svh - 94px));
   display: grid;
   grid-template-rows: 24px auto 24px;
   gap: 7px;
@@ -71,6 +71,66 @@
   color: #f5f0e8;
   font-size: 0.82rem;
   font-weight: 700;
+}
+
+.board-with-evaluation {
+  width: min(100%, 592px);
+  display: grid;
+  grid-template-columns: 24px minmax(0, 560px);
+  align-items: stretch;
+  gap: 8px;
+}
+
+.evaluation-stack {
+  min-width: 0;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 6px;
+}
+
+.evaluation-bar {
+  position: relative;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid rgba(245, 240, 232, 0.18);
+  border-radius: 6px;
+  background: #23211f;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.2);
+}
+
+.evaluation-bar-white {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  background: #f2eee5;
+  transition: height 180ms ease;
+}
+
+.evaluation-value {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  z-index: 1;
+  min-width: 42px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  color: #f4efe7;
+  background: rgba(16, 16, 15, 0.72);
+  font-size: 0.72rem;
+  font-weight: 800;
+  line-height: 1.2;
+  text-align: center;
+  transform: translateX(-50%);
+}
+
+.evaluation-status {
+  min-height: 24px;
+  color: rgba(245, 240, 232, 0.6);
+  font-size: 0.66rem;
+  font-weight: 700;
+  line-height: 1.05;
+  text-align: center;
 }
 
 .board-wrap {
@@ -287,9 +347,10 @@
   }
 
   .board-wrap,
+  .board-with-evaluation,
   .board-column,
   .game-panel {
-    width: min(94vw, 560px);
+    width: min(94vw, 592px);
     max-width: 100%;
   }
 
@@ -311,6 +372,16 @@
 
   .board-wrap {
     max-width: calc(100svh - 142px);
+  }
+
+  .board-with-evaluation {
+    grid-template-columns: 22px minmax(0, 1fr);
+    gap: 6px;
+  }
+
+  .evaluation-value {
+    min-width: 36px;
+    font-size: 0.66rem;
   }
 
   .captured-piece {

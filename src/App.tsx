@@ -12,9 +12,12 @@ import {
   type ChessSoundEvent,
 } from "./soundManager";
 import { StockfishEngine } from "./stockfishEngine";
+import { EvaluationBar } from "./components/EvaluationBar";
+import { useEvaluation } from "./hooks/useEvaluation";
 import "./App.css";
 
 const DEFAULT_DEPTH = 10;
+const DEFAULT_EVALUATION_DEPTH = 26;
 const STOCKFISH_REPLY_DELAY_MS = 1000;
 const STOCKFISH_DRAG_RETRY_DELAY_MS = 150;
 const TIMELINE_MOVE_ANIMATION_MS = 220;
@@ -481,6 +484,11 @@ export default function App() {
   const activeSquareRef = useRef<Square | null>(null);
   const activeSourceRef = useRef<ActiveSource | null>(null);
   const displayedFen = timeline[currentPlyIndex]?.fen ?? game.fen();
+  const {
+    evaluation,
+    isLoading: isEvaluationLoading,
+    isOffline: isEvaluationOffline,
+  } = useEvaluation(displayedFen, DEFAULT_EVALUATION_DEPTH);
   const displayedGame = useMemo(() => new Chess(displayedFen), [displayedFen]);
   const isViewingLatest = currentPlyIndex === timeline.length - 1;
   const latestPly = timeline.length - 1;
@@ -1261,50 +1269,57 @@ export default function App() {
             advantage={blackMaterialAdvantage}
             side="top"
           />
-          <div className="board-wrap" ref={boardWrapRef}>
-            <Chessboard
-              options={{
-                position: displayedFen,
-                pieces: timelinePieces,
-                squareStyles: buildCustomSquareStyles(),
-                showAnimations: !timelineAnimation && !isBoardTeleporting,
-                animationDurationInMs: TIMELINE_MOVE_ANIMATION_MS,
-                allowDragging: isViewingLatest && canSelectWhitePieces(),
-                canDragPiece: ({ piece, square }) =>
-                  isViewingLatest &&
-                  piece.pieceType.startsWith("w") &&
-                  isSquare(square) &&
-                  isSelectableHumanPiece(square),
-                draggingPieceGhostStyle: draggedSquare && isDraggingRef.current
-                  ? HIDDEN_DRAG_SOURCE_PIECE_STYLE
-                  : VISIBLE_DRAG_SOURCE_PIECE_STYLE,
-                onPieceDrag: ({ square }) => handlePieceDrag(square),
-                onPieceDrop: ({ sourceSquare, targetSquare }) =>
-                  handlePieceDrop(sourceSquare, targetSquare),
-                onSquareClick: ({ square }) => {
-                  if (isSquare(square)) {
-                    handleSquareClick(square);
-                  }
-                },
-                onMouseOverSquare: ({ square }) => {
-                  if (isSquare(square)) {
-                    handleMouseOverSquare(square);
-                  }
-                },
-                onMouseOutSquare: () => handleMouseOutSquare(),
-              }}
+          <div className="board-with-evaluation">
+            <EvaluationBar
+              evaluation={evaluation}
+              isLoading={isEvaluationLoading}
+              isOffline={isEvaluationOffline}
             />
+            <div className="board-wrap" ref={boardWrapRef}>
+              <Chessboard
+                options={{
+                  position: displayedFen,
+                  pieces: timelinePieces,
+                  squareStyles: buildCustomSquareStyles(),
+                  showAnimations: !timelineAnimation && !isBoardTeleporting,
+                  animationDurationInMs: TIMELINE_MOVE_ANIMATION_MS,
+                  allowDragging: isViewingLatest && canSelectWhitePieces(),
+                  canDragPiece: ({ piece, square }) =>
+                    isViewingLatest &&
+                    piece.pieceType.startsWith("w") &&
+                    isSquare(square) &&
+                    isSelectableHumanPiece(square),
+                  draggingPieceGhostStyle: draggedSquare && isDraggingRef.current
+                    ? HIDDEN_DRAG_SOURCE_PIECE_STYLE
+                    : VISIBLE_DRAG_SOURCE_PIECE_STYLE,
+                  onPieceDrag: ({ square }) => handlePieceDrag(square),
+                  onPieceDrop: ({ sourceSquare, targetSquare }) =>
+                    handlePieceDrop(sourceSquare, targetSquare),
+                  onSquareClick: ({ square }) => {
+                    if (isSquare(square)) {
+                      handleSquareClick(square);
+                    }
+                  },
+                  onMouseOverSquare: ({ square }) => {
+                    if (isSquare(square)) {
+                      handleMouseOverSquare(square);
+                    }
+                  },
+                  onMouseOutSquare: () => handleMouseOutSquare(),
+                }}
+              />
 
-            {timelineAnimation && animatedPiece && timelineAnimationStyle ? (
-              <div
-                className="timeline-piece-animation"
-                key={timelineAnimation.key}
-                style={timelineAnimationStyle}
-                aria-hidden="true"
-              >
-                {animatedPiece({ square: timelineAnimation.to })}
-              </div>
-            ) : null}
+              {timelineAnimation && animatedPiece && timelineAnimationStyle ? (
+                <div
+                  className="timeline-piece-animation"
+                  key={timelineAnimation.key}
+                  style={timelineAnimationStyle}
+                  aria-hidden="true"
+                >
+                  {animatedPiece({ square: timelineAnimation.to })}
+                </div>
+              ) : null}
+            </div>
           </div>
           <CapturedPiecesRow
             capturedPieces={capturedPieces.byWhite}

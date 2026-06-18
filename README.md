@@ -12,6 +12,7 @@ Chess web app with Stockfish, premoves, timeline navigation, sounds, and capture
 - Animated timeline move playback.
 - Captured-piece rows with material advantage.
 - Move, capture, check, checkmate, and promotion sounds.
+- Local native Stockfish evaluation bar for the displayed timeline position.
 - New game reset.
 
 ## Requirements
@@ -32,6 +33,23 @@ npm run dev
 ```
 
 Vite prints the local development URL after the server starts.
+
+## Local Native Evaluation
+
+The app can show a local native Stockfish evaluation bar beside the board. The browser Stockfish worker still handles gameplay; the local Node server is only for evaluation.
+
+Set `STOCKFISH_PATH` to your native Stockfish executable, then run the eval server and app in two terminals:
+
+```powershell
+$env:STOCKFISH_PATH="C:\Tools\Stockfish\stockfish-windows-x86-64-avx2.exe"
+npm run dev:server
+```
+
+```powershell
+npm run dev:app
+```
+
+The app calls `GET /api/eval?fen=<encodedFen>&depth=14` through the Vite dev proxy. If the eval server is not running, or `STOCKFISH_PATH` is missing or invalid, the board remains playable and the eval bar shows `local eval offline`.
 
 ## Build
 
