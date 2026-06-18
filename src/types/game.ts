@@ -1,6 +1,21 @@
 import type { Square, PieceSymbol } from "chess.js";
 import type { GameResult, GameEndReason } from "../lib/supabase";
 
+export type AnalysisMove = {
+  from: Square;
+  to: Square;
+  san: string;
+  fen: string;
+  promotion?: string;
+};
+
+export type AnalysisSandbox = {
+  basePly: number;
+  baseFen: string;
+  currentFen: string;
+  moves: AnalysisMove[];
+};
+
 export type EngineStatus = "loading" | "ready" | "failed";
 export type ActiveSource = "click" | "drag";
 

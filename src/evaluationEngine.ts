@@ -11,18 +11,27 @@ import {
 
 const SEARCH_TIMEOUT_MS = 300_000;
 
+export type BestMove = {
+  uci: string;
+  from: string;
+  to: string;
+  promotion: string | null;
+};
+
 export type Evaluation =
   | {
       type: "cp";
       value: number;
       depth: number;
       fen: string;
+      bestMove: BestMove | null;
     }
   | {
       type: "mate";
       value: number;
       depth: number;
       fen: string;
+      bestMove: BestMove | null;
     };
 
 
@@ -346,6 +355,7 @@ function parseInfoLine(line: string, search: ActiveSearch): Evaluation | null {
   if (!depthMatch) return null;
 
   const depth = Number(depthMatch[1]);
+  const bestMove = parseBestMoveFromPv(line);
 
   if (cpMatch) {
     return {
@@ -353,6 +363,7 @@ function parseInfoLine(line: string, search: ActiveSearch): Evaluation | null {
       value: Number(cpMatch[1]) * search.sideMultiplier,
       depth,
       fen: search.fen,
+      bestMove,
     };
   }
 
@@ -362,10 +373,24 @@ function parseInfoLine(line: string, search: ActiveSearch): Evaluation | null {
       value: Number(mateMatch[1]) * search.sideMultiplier,
       depth,
       fen: search.fen,
+      bestMove,
     };
   }
 
   return null;
+}
+
+function parseBestMoveFromPv(line: string): BestMove | null {
+  const pvMatch = line.match(/\bpv\s+([a-h][1-8][a-h][1-8][qrbn]?)/);
+  if (!pvMatch) return null;
+
+  const uci = pvMatch[1];
+  return {
+    uci,
+    from: uci.slice(0, 2),
+    to: uci.slice(2, 4),
+    promotion: uci.length === 5 ? uci[4] ?? null : null,
+  };
 }
 
 async function preflightStockfishAssets() {

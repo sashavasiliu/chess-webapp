@@ -18,6 +18,7 @@ import {
 import {
   PIECE_VALUES,
   CAPTURED_PIECE_ORDER,
+  DEFAULT_DEPTH,
 } from "../constants";
 
 export function isSquare(value: string | null): value is Square {
@@ -272,5 +273,6 @@ export function getPlayerOutcome(game: SavedGame) {
 export function getSavedGameSummary(game: SavedGame) {
   const colorLabel = getPlayerColor(game) === "w" ? "White" : "Black";
   const timeControl = getTimeControlFromSavedGame(game).label;
-  return `${colorLabel} | ${timeControl} | ${getEndReasonLabel(game.end_reason)}`;
+  const depth = game.opponent_depth ?? DEFAULT_DEPTH;
+  return `${colorLabel} | ${timeControl} | ${getEndReasonLabel(game.end_reason)} | Depth ${depth}`;
 }

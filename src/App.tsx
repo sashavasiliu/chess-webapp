@@ -24,6 +24,7 @@ import {
   Chessboard,
   defaultPieces,
   getRelativeCoords,
+  type Arrow,
   type PieceRenderObject,
 } from "react-chessboard";
 import {
@@ -44,6 +45,8 @@ import {
 import {
   DEFAULT_DEPTH,
   DEFAULT_EVALUATION_DEPTH,
+  MIN_OPPONENT_DEPTH,
+  MAX_OPPONENT_DEPTH,
   STOCKFISH_REPLY_DELAY_MS,
   STOCKFISH_DRAG_RETRY_DELAY_MS,
   TIMELINE_MOVE_ANIMATION_MS,
@@ -52,6 +55,7 @@ import {
   CAPTURED_PIECE_SYMBOLS,
   TIME_CONTROL_OPTIONS,
   DEFAULT_TIME_CONTROL,
+  getApproxEloForDepth,
 } from "./constants";
 import type {
   EngineStatus,
@@ -63,6 +67,8 @@ import type {
   GameSnapshot,
   GameScreenMode,
   SavedGameCompletion,
+  AnalysisSandbox,
+  AnalysisMove,
 } from "./types/game";
 import {
   isSquare,
@@ -301,6 +307,10 @@ function GameInfoPanel({
   engineError,
   isThinking,
   isReplyPending,
+  opponentDepth,
+  isAnalysisActive,
+  analysisMoveCount,
+  onResetAnalysis,
 }: {
   startedAt: Date;
   playerColor: PlayerColor;
@@ -323,6 +333,10 @@ function GameInfoPanel({
   engineError: string | null;
   isThinking: boolean;
   isReplyPending: boolean;
+  opponentDepth: number;
+  isAnalysisActive: boolean;
+  analysisMoveCount: number;
+  onResetAnalysis: () => void;
 }) {
   const formattedEngineStatus = formatEngineStatus(
     engineStatus,
@@ -339,7 +353,7 @@ function GameInfoPanel({
             <dd>{formatStartedAt(startedAt)}</dd>
           </div>
           <div>
-            <dt>Info</dt>
+            <dt>Side</dt>
             <dd>{playerColor === "w" ? "White" : "Black"} vs Stockfish</dd>
           </div>
           <div>
@@ -353,6 +367,12 @@ function GameInfoPanel({
           <div>
             <dt>Status</dt>
             <dd>{isGameCompleted ? getEndReasonLabel(endReason) : "Active"}</dd>
+          </div>
+          <div>
+            <dt>Depth</dt>
+            <dd>
+              {opponentDepth} <span className="elo-hint">(~{getApproxEloForDepth(opponentDepth)} Elo)</span>
+            </dd>
           </div>
           <div>
             <dt>Position</dt>
@@ -383,6 +403,22 @@ function GameInfoPanel({
           </button>
         ) : null}
       </section>
+
+      {isAnalysisActive ? (
+        <div className="analysis-banner" role="status">
+          <span>
+            Analysis line
+            {analysisMoveCount > 0 ? ` · ${analysisMoveCount} move${analysisMoveCount !== 1 ? "s" : ""}` : ""}
+          </span>
+          <button
+            className="reset-analysis-button"
+            type="button"
+            onClick={onResetAnalysis}
+          >
+            Reset
+          </button>
+        </div>
+      ) : null}
 
       <MoveTable
         rows={moveRows}
@@ -867,6 +903,7 @@ function NewGameRoute() {
   const navigate = useNavigate();
   const [playerColor, setPlayerColor] = useState<PlayerColor>(DEFAULT_PLAYER_COLOR);
   const [selectedTimeControl, setSelectedTimeControl] = useState(DEFAULT_TIME_CONTROL);
+  const [selectedDepth, setSelectedDepth] = useState(DEFAULT_DEPTH);
   const [error, setError] = useState<string | null>(null);
   const [isCreating, setIsCreating] = useState(false);
 
@@ -891,7 +928,7 @@ function NewGameRoute() {
         pgn: "",
         timeline: createInitialTimeline(),
         current_ply: 0,
-        opponent_depth: DEFAULT_DEPTH,
+        opponent_depth: selectedDepth,
         player_color: playerColor,
         time_control_label: selectedTimeControl.label,
         base_seconds: selectedTimeControl.baseSeconds,
@@ -959,6 +996,26 @@ function NewGameRoute() {
           </section>
 
           <section className="setup-section">
+            <h2>Stockfish Strength</h2>
+            <div className="depth-selector">
+              <input
+                className="depth-slider"
+                type="range"
+                min={MIN_OPPONENT_DEPTH}
+                max={MAX_OPPONENT_DEPTH}
+                value={selectedDepth}
+                onChange={(e) => setSelectedDepth(Number(e.target.value))}
+                aria-label={`Stockfish depth: ${selectedDepth}`}
+              />
+              <div className="depth-labels">
+                <span className="depth-value">Depth {selectedDepth}</span>
+                <span className="depth-elo">Approx. Elo: {getApproxEloForDepth(selectedDepth)}</span>
+              </div>
+              <p className="depth-note">Higher depth = stronger play, longer thinking time.</p>
+            </div>
+          </section>
+
+          <section className="setup-section">
             <h2>Time Control</h2>
             <div className="time-control-grid">
               {TIME_CONTROL_OPTIONS.map((option) => (
@@ -1020,7 +1077,8 @@ function ChessGameScreen({
   const [isThinking, setIsThinking] = useState(false);
   const [isStockfishReplyPending, setIsStockfishReplyPending] = useState(false);
   const [premove, setPremove] = useState<Premove | null>(null);
-  const [depth] = useState(DEFAULT_DEPTH);
+  const [depth, setDepth] = useState(DEFAULT_DEPTH);
+  const [analysisSandbox, setAnalysisSandbox] = useState<AnalysisSandbox | null>(null);
   const [engineError, setEngineError] = useState<string | null>(null);
   const [engineStatus, setEngineStatus] = useState<EngineStatus>("loading");
   const [activeSquare, setActiveSquare] = useState<Square | null>(null);
@@ -1038,6 +1096,7 @@ function ChessGameScreen({
   const incrementSecondsRef = useRef(incrementSeconds);
   const playerTimeRemainingSecondsRef = useRef<number | null>(playerTimeRemainingSeconds);
   const savedGameStatusRef = useRef<"active" | "completed">(savedGameStatus);
+  const depthRef = useRef(depth);
   const engineRef = useRef<StockfishEngine | null>(null);
   const searchIdRef = useRef(0);
   const isThinkingRef = useRef(false);
@@ -1056,7 +1115,7 @@ function ChessGameScreen({
   const clockPersistIntervalRef = useRef<number | null>(null);
   const clockStartedAtRef = useRef<number | null>(null);
   const clockStartingSecondsRef = useRef<number | null>(null);
-  const displayedFen = timeline[currentPlyIndex]?.fen ?? game.fen();
+  const displayedFen = analysisSandbox?.currentFen ?? timeline[currentPlyIndex]?.fen ?? game.fen();
   const {
     evaluation,
     isLoading: isEvaluationLoading,
@@ -1156,6 +1215,8 @@ function ChessGameScreen({
           clockStartingSecondsRef.current = null;
         }
 
+        const nextDepth = savedGame.opponent_depth ?? DEFAULT_DEPTH;
+        depthRef.current = nextDepth;
         playerTimeRemainingSecondsRef.current = adjustedRemaining;
         savedGameStatusRef.current = savedGame.status;
         setGame(loadedGame);
@@ -1169,6 +1230,7 @@ function ChessGameScreen({
         setPlayerTimeRemainingSeconds(adjustedRemaining);
         setEndReason(savedGame.end_reason ?? "ongoing");
         setSavedGameStatus(savedGame.status);
+        setDepth(nextDepth);
         setIsGameLoaded(true);
       });
 
@@ -1502,6 +1564,38 @@ function ChessGameScreen({
     clockStartingSecondsRef.current = remainingSeconds;
   }
 
+  function makeAnalysisMove(from: Square, to: Square): boolean {
+    const baseFen = analysisSandbox?.currentFen ?? timeline[currentPlyIndex]?.fen ?? game.fen();
+    const analysisGame = new Chess(baseFen);
+    const move = analysisGame.move({ from, to, promotion: "q" });
+    if (!move) return false;
+
+    const sandboxBase = analysisSandbox ?? {
+      basePly: currentPlyIndex,
+      baseFen: timeline[currentPlyIndex]?.fen ?? game.fen(),
+      currentFen: baseFen,
+      moves: [] as AnalysisMove[],
+    };
+
+    setAnalysisSandbox({
+      basePly: sandboxBase.basePly,
+      baseFen: sandboxBase.baseFen,
+      currentFen: analysisGame.fen(),
+      moves: [
+        ...sandboxBase.moves,
+        { from: move.from, to: move.to, san: move.san, fen: analysisGame.fen(), promotion: move.promotion },
+      ],
+    });
+    clearInteractionState();
+    playChessSound(getSoundForMove(analysisGame, move));
+    return true;
+  }
+
+  function resetAnalysis() {
+    setAnalysisSandbox(null);
+    clearInteractionState();
+  }
+
   function setCurrentSavedGameStatus(nextStatus: "active" | "completed") {
     savedGameStatusRef.current = nextStatus;
     setSavedGameStatus(nextStatus);
@@ -1651,7 +1745,7 @@ function ChessGameScreen({
     setEngineError(null);
 
     try {
-      const bestMove = await engine.findBestMove(snapshot.fen, depth);
+      const bestMove = await engine.findBestMove(snapshot.fen, depthRef.current);
 
       if (searchId !== searchIdRef.current) return;
 
@@ -1969,6 +2063,27 @@ function ChessGameScreen({
 
     unlockAudio();
 
+    if (mode === "review") {
+      if (square === activeSquare) {
+        clearInteractionState();
+        return;
+      }
+      if (activeSquare && legalMoves.some((move) => move.to === square)) {
+        makeAnalysisMove(activeSquare, square);
+        return;
+      }
+      if (displayedGame.get(square) !== undefined) {
+        const moves = getLegalMovesForSquare(square, displayedGame);
+        setSelectedSquare(square);
+        setSelectedSource("click");
+        setHoveredSquare(null);
+        setLegalMoves(moves);
+        return;
+      }
+      clearInteractionState();
+      return;
+    }
+
     if (canSetPremove() && premove?.from === square) {
       setQueuedPremove(null);
       clearInteractionState();
@@ -2013,6 +2128,20 @@ function ChessGameScreen({
       return;
     }
 
+    if (mode === "review") {
+      if (displayedGame.get(square) !== undefined) {
+        beginDrag(square, false);
+        const moves = getLegalMovesForSquare(square, displayedGame);
+        setSelectedSquare(square);
+        setSelectedSource("drag");
+        setLegalMoves(moves);
+        return;
+      }
+      endDrag();
+      clearInteractionState();
+      return;
+    }
+
     if (isViewingLatest && isSelectableHumanPiece(square)) {
       if (canSetPremove()) {
         setQueuedPremove(null);
@@ -2038,6 +2167,10 @@ function ChessGameScreen({
         return false;
       }
 
+      if (mode === "review") {
+        return makeAnalysisMove(sourceSquare, targetSquare);
+      }
+
       const didMove = makeMove(sourceSquare, targetSquare);
 
       if (!didMove && queuePremove(sourceSquare, targetSquare)) {
@@ -2056,6 +2189,12 @@ function ChessGameScreen({
   }
 
   function handleMouseOverSquare(square: Square) {
+    if (mode === "review") {
+      if (!activeSquare && !draggedSquare && displayedGame.get(square) !== undefined) {
+        setHoveredSquare(square);
+      }
+      return;
+    }
     if (!activeSquare && !draggedSquare && isSelectableHumanPiece(square)) {
       setHoveredSquare(square);
     }
@@ -2077,6 +2216,7 @@ function ChessGameScreen({
   function goToPly(ply: number, { playSound = true } = {}) {
     clearTimelineAnimation();
     clearInteractionState();
+    setAnalysisSandbox(null);
     setViewedPlyIndex(ply);
 
     if (ply !== timelineRef.current.length - 1) {
@@ -2090,6 +2230,7 @@ function ChessGameScreen({
 
   function selectTimelineMove(entry: TimelineEntry) {
     clearInteractionState();
+    setAnalysisSandbox(null);
     if (entry.ply !== timelineRef.current.length - 1) {
       setQueuedPremove(null);
     }
@@ -2173,6 +2314,10 @@ function ChessGameScreen({
     boardWidth,
     boardOrientation,
   );
+  const bestMoveArrow: Arrow[] =
+    showEvaluationBar && evaluation?.bestMove && evaluation.fen === displayedFen
+      ? [{ startSquare: evaluation.bestMove.from, endSquare: evaluation.bestMove.to, color: "rgba(52, 168, 83, 0.72)" }]
+      : [];
 
   if (!isGameLoaded) {
     return <LoadingScreen />;
@@ -2236,15 +2381,19 @@ function ChessGameScreen({
                   squareStyles: buildCustomSquareStyles(),
                   showAnimations: !timelineAnimation,
                   animationDurationInMs: TIMELINE_MOVE_ANIMATION_MS,
-                  allowDragging: isViewingLatest && canSelectPlayerPieces(),
-                  canDragPiece: ({ piece, square }) =>
-                    isViewingLatest &&
-                    piece.pieceType.startsWith(playerColorRef.current) &&
-                    isSquare(square) &&
-                    isSelectableHumanPiece(square),
+                  allowDragging: mode === "review" || (isViewingLatest && canSelectPlayerPieces()),
+                  canDragPiece: mode === "review"
+                    ? ({ square }) => isSquare(square) && displayedGame.get(square) !== undefined
+                    : ({ piece, square }) =>
+                        isViewingLatest &&
+                        piece.pieceType.startsWith(playerColorRef.current) &&
+                        isSquare(square) &&
+                        isSelectableHumanPiece(square),
                   draggingPieceGhostStyle: draggedSquare && isDraggingRef.current
                     ? HIDDEN_DRAG_SOURCE_PIECE_STYLE
                     : VISIBLE_DRAG_SOURCE_PIECE_STYLE,
+                  arrows: bestMoveArrow,
+                  allowDrawingArrows: false,
                   onPieceDrag: ({ square }) => handlePieceDrag(square),
                   onPieceDrop: ({ sourceSquare, targetSquare }) =>
                     handlePieceDrop(sourceSquare, targetSquare),
@@ -2304,6 +2453,10 @@ function ChessGameScreen({
           engineError={engineError}
           isThinking={isThinking}
           isReplyPending={isStockfishReplyPending}
+          opponentDepth={depth}
+          isAnalysisActive={analysisSandbox !== null}
+          analysisMoveCount={analysisSandbox?.moves.length ?? 0}
+          onResetAnalysis={resetAnalysis}
         />
       </div>
     </main>

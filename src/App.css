@@ -772,6 +772,83 @@
   cursor: not-allowed;
 }
 
+/* Depth selector in new game setup */
+.depth-selector {
+  display: grid;
+  gap: 8px;
+}
+
+.depth-slider {
+  width: 100%;
+  accent-color: rgba(232, 184, 102, 0.9);
+  cursor: pointer;
+}
+
+.depth-labels {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.depth-value {
+  color: #f5f0e8;
+  font-size: 0.9rem;
+  font-weight: 800;
+}
+
+.depth-elo {
+  color: rgba(232, 184, 102, 0.9);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.depth-note {
+  margin: 0;
+  color: rgba(245, 240, 232, 0.48);
+  font-size: 0.68rem;
+  line-height: 1.35;
+}
+
+/* Elo hint shown next to depth in game panel */
+.elo-hint {
+  color: rgba(245, 240, 232, 0.52);
+  font-size: 0.72rem;
+}
+
+/* Analysis sandbox banner */
+.analysis-banner {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(52, 168, 83, 0.1);
+  color: rgba(152, 230, 170, 0.9);
+  font-size: 0.74rem;
+  font-weight: 700;
+}
+
+.reset-analysis-button {
+  min-height: 24px;
+  padding: 0 8px;
+  border: 1px solid rgba(152, 230, 170, 0.3);
+  border-radius: 5px;
+  color: rgba(152, 230, 170, 0.9);
+  background: rgba(52, 168, 83, 0.14);
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.reset-analysis-button:hover {
+  background: rgba(52, 168, 83, 0.24);
+}
+
 @media (max-width: 850px) {
   .game-layout {
     --eval-width: 42px;
