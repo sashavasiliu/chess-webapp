@@ -1,18 +1,20 @@
-const STOCKFISH_WORKER_PATH = "/stockfish/stockfish-18-lite-single.js";
-const STOCKFISH_WASM_PATH = "/stockfish/stockfish-18-lite-single.wasm";
-const INIT_TIMEOUT_MS = 15_000;
+import {
+  STOCKFISH_WORKER_PATH,
+  STOCKFISH_WASM_PATH,
+  INIT_TIMEOUT_MS,
+  looksLikeHtml,
+  hasWasmMagic,
+  getErrorMessage,
+  type Deferred,
+  type AssetKind,
+} from "./lib/stockfishWorkerUtils";
 
-type Deferred<T> = {
-  resolve: (value: T) => void;
-  reject: (reason?: unknown) => void;
-};
 
 type Waiter = Deferred<void> & {
   kind: "uciok" | "readyok";
   timeoutId: ReturnType<typeof setTimeout>;
 };
 
-type AssetKind = "JavaScript" | "WASM";
 
 export class StockfishEngine {
   private worker: Worker | null = null;
@@ -357,21 +359,6 @@ function validateMimeType(path: string, kind: AssetKind, contentType: string) {
   }
 }
 
-function looksLikeHtml(text: string) {
-  const lowerText = text.toLowerCase();
-
-  return (
-    lowerText.startsWith("<!doctype html") ||
-    lowerText.startsWith("<html") ||
-    lowerText.includes("<title>") ||
-    lowerText.includes("<body")
-  );
-}
-
-function hasWasmMagic(bytes: Uint8Array) {
-  return bytes[0] === 0x00 && bytes[1] === 0x61 && bytes[2] === 0x73 && bytes[3] === 0x6d;
-}
-
 function formatLocation(event: ErrorEvent) {
   const parts = [
     event.filename ? `file ${event.filename}` : "",
@@ -382,6 +369,3 @@ function formatLocation(event: ErrorEvent) {
   return parts.length ? ` (${parts.join(", ")})` : "";
 }
 
-function getErrorMessage(error: unknown) {
-  return error instanceof Error ? error.message : String(error);
-}

@@ -12,7 +12,7 @@ type EvaluationState = {
 
 const EVALUATION_DEBOUNCE_MS = 250;
 
-export function useEvaluation(fen: string, depth: number) {
+export function useEvaluation(fen: string, depth: number, enabled = true) {
   const [state, setState] = useState<EvaluationState>({
     evaluation: null,
     isLoading: false,
@@ -23,6 +23,10 @@ export function useEvaluation(fen: string, depth: number) {
   const engineRef = useRef<EvaluationEngine | null>(null);
 
   useEffect(() => {
+    if (!enabled) {
+      return;
+    }
+
     const engine = new EvaluationEngine();
     engineRef.current = engine;
 
@@ -32,9 +36,24 @@ export function useEvaluation(fen: string, depth: number) {
       }
       engine.quit();
     };
-  }, []);
+  }, [enabled]);
 
   useEffect(() => {
+    if (!enabled) {
+      requestIdRef.current += 1;
+      engineRef.current?.stop("Evaluation disabled.");
+      const timeoutId = window.setTimeout(() => {
+        setState({
+          evaluation: null,
+          isLoading: false,
+          isOffline: false,
+          error: null,
+        });
+      }, 0);
+
+      return () => window.clearTimeout(timeoutId);
+    }
+
     const requestId = requestIdRef.current + 1;
     requestIdRef.current = requestId;
 
@@ -114,7 +133,7 @@ export function useEvaluation(fen: string, depth: number) {
       window.clearTimeout(timeoutId);
       engineRef.current?.stop("Evaluation interrupted by a newer request.");
     };
-  }, [fen, depth]);
+  }, [fen, depth, enabled]);
 
   return state;
 }

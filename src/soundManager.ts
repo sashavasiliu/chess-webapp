@@ -128,8 +128,6 @@ export function unlockAudio() {
   });
 }
 
-export const unlockChessSounds = unlockAudio;
-
 export function isChessSoundEnabled() {
   return soundEnabled;
 }

@@ -1,4 +1,24 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type FormEvent,
+  type ReactNode,
+} from "react";
+import {
+  BrowserRouter,
+  Link,
+  Navigate,
+  Route,
+  Routes,
+  useNavigate,
+  useParams,
+} from "react-router-dom";
+import type { Session, User } from "@supabase/supabase-js";
 import { Chess, type Move, type PieceSymbol, type Square } from "chess.js";
 import {
   Chessboard,
@@ -9,84 +29,163 @@ import {
 import {
   playChessSound,
   unlockAudio,
-  type ChessSoundEvent,
 } from "./soundManager";
 import { StockfishEngine } from "./stockfishEngine";
 import { EvaluationBar } from "./components/EvaluationBar";
 import { useEvaluation } from "./hooks/useEvaluation";
+import {
+  isSupabaseConfigured,
+  supabase,
+  type GameEndReason,
+  type GameResult,
+  type PlayerColor,
+  type SavedGame,
+} from "./lib/supabase";
+import {
+  DEFAULT_DEPTH,
+  DEFAULT_EVALUATION_DEPTH,
+  STOCKFISH_REPLY_DELAY_MS,
+  STOCKFISH_DRAG_RETRY_DELAY_MS,
+  TIMELINE_MOVE_ANIMATION_MS,
+  CLOCK_PERSIST_INTERVAL_MS,
+  DEFAULT_PLAYER_COLOR,
+  CAPTURED_PIECE_SYMBOLS,
+  TIME_CONTROL_OPTIONS,
+  DEFAULT_TIME_CONTROL,
+} from "./constants";
+import type {
+  EngineStatus,
+  ActiveSource,
+  Premove,
+  TimelineEntry,
+  TimelineAnimation,
+  MoveRow,
+  GameSnapshot,
+  GameScreenMode,
+  SavedGameCompletion,
+} from "./types/game";
+import {
+  isSquare,
+  getSoundForMove,
+  getSoundForTimelineEntry,
+  cloneGameWithHistory,
+  getGameSnapshot,
+  loadGameSnapshot,
+  parseSavedTimeline,
+  createInitialTimeline,
+  getSavedGameStatus,
+  getOpponentResult,
+  getPlayerColor,
+  getTimeControlFromSavedGame,
+  getInitialRemainingSeconds,
+  isTimedGame,
+  formatClock,
+  getTimeControlDescription,
+  getMoveNumberForPly,
+  getRenderedPieceCode,
+  sortCapturedPieces,
+  getCapturedPiecesFromTimeline,
+  getMaterialAdvantage,
+  buildMoveRows,
+  formatStartedAt,
+  formatEngineStatus,
+  getEndReasonLabel,
+  getSavedGameMoveCount,
+  formatSavedGameDate,
+  getPlayerOutcome,
+  getSavedGameSummary,
+} from "./utils/chessUtils";
 import "./App.css";
 
-const DEFAULT_DEPTH = 10;
-const DEFAULT_EVALUATION_DEPTH = 26;
-const STOCKFISH_REPLY_DELAY_MS = 1000;
-const STOCKFISH_DRAG_RETRY_DELAY_MS = 150;
-const TIMELINE_MOVE_ANIMATION_MS = 220;
-const PIECE_VALUES: Record<PieceSymbol, number> = {
-  p: 1,
-  n: 3,
-  b: 3,
-  r: 5,
-  q: 9,
-  k: 0,
-};
-const CAPTURED_PIECE_ORDER: PieceSymbol[] = ["q", "r", "b", "n", "p"];
-const CAPTURED_PIECE_SYMBOLS: Record<"w" | "b", Record<PieceSymbol, string>> = {
-  w: {
-    p: "\u2659",
-    n: "\u2658",
-    b: "\u2657",
-    r: "\u2656",
-    q: "\u2655",
-    k: "\u2654",
-  },
-  b: {
-    p: "\u265f",
-    n: "\u265e",
-    b: "\u265d",
-    r: "\u265c",
-    q: "\u265b",
-    k: "\u265a",
-  },
+
+type AuthContextValue = {
+  session: Session | null;
+  user: User | null;
+  isLoading: boolean;
 };
 
-type EngineStatus = "loading" | "ready" | "failed";
-type ActiveSource = "click" | "drag";
-type Premove = {
-  from: Square;
-  to: Square;
-  promotion?: "q" | "r" | "b" | "n";
-};
-type TimelineEntry = {
-  ply: number;
-  fen: string;
-  san?: string;
-  uci?: string;
-  from?: Square;
-  to?: Square;
-  promotion?: string;
-  captured?: PieceSymbol;
-  moveNumber?: number;
-  color?: "w" | "b";
-};
-type TimelineAnimation = {
-  key: number;
-  from: Square;
-  to: Square;
-  piece: string;
-};
-type MoveRow = {
-  moveNumber: number;
-  white?: TimelineEntry;
-  black?: TimelineEntry;
-};
-type GameSnapshot = {
-  fen: string;
-  pgn: string;
-};
-type CapturedPieces = {
-  byWhite: PieceSymbol[];
-  byBlack: PieceSymbol[];
-};
+const AuthContext = createContext<AuthContextValue>({
+  session: null,
+  user: null,
+  isLoading: true,
+});
+
+
+function useAuth() {
+  return useContext(AuthContext);
+}
+
+function requireSupabase() {
+  if (!supabase) {
+    throw new Error("Supabase is not configured.");
+  }
+
+  return supabase;
+}
+
+async function ensureUserRows(user: User) {
+  const client = requireSupabase();
+  const email = user.email ?? "unknown@example.com";
+
+  await client.from("profiles").upsert({
+    id: user.id,
+    email,
+    display_name: email.split("@")[0] ?? email,
+    updated_at: new Date().toISOString(),
+  });
+
+  await client.from("preferences").upsert({
+    user_id: user.id,
+    sound_enabled: true,
+    default_opponent_depth: DEFAULT_DEPTH,
+    default_eval_depth: DEFAULT_EVALUATION_DEPTH,
+  });
+}
+
+function AuthProvider({ children }: { children: ReactNode }) {
+  const [session, setSession] = useState<Session | null>(null);
+  const [isLoading, setIsLoading] = useState(isSupabaseConfigured);
+
+  useEffect(() => {
+    if (!supabase) {
+      return;
+    }
+
+    let isActive = true;
+
+    void supabase.auth.getSession().then(({ data }) => {
+      if (!isActive) return;
+      setSession(data.session);
+      setIsLoading(false);
+      if (data.session?.user) {
+        void ensureUserRows(data.session.user);
+      }
+    });
+
+    const { data } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      setSession(nextSession);
+      if (nextSession?.user) {
+        void ensureUserRows(nextSession.user);
+      }
+    });
+
+    return () => {
+      isActive = false;
+      data.subscription.unsubscribe();
+    };
+  }, []);
+
+  const value = useMemo<AuthContextValue>(
+    () => ({
+      session,
+      user: session?.user ?? null,
+      isLoading,
+    }),
+    [session, isLoading],
+  );
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+}
 
 const SELECTED_SQUARE_STYLE: CSSProperties = {
   boxShadow: "inset 0 0 0 4px rgba(230, 170, 45, 0.95), inset 0 0 18px rgba(255, 220, 120, 0.85)",
@@ -124,158 +223,6 @@ const VISIBLE_DRAG_SOURCE_PIECE_STYLE: CSSProperties = {
   opacity: 1,
   visibility: "visible",
 };
-
-function isSquare(value: string | null): value is Square {
-  return /^[a-h][1-8]$/.test(value ?? "");
-}
-
-function getSoundForMove(gameAfterMove: Chess, move: Move): ChessSoundEvent {
-  if (gameAfterMove.isCheckmate()) return "checkmate";
-  if (gameAfterMove.isCheck()) return "check";
-  if (move.promotion) return "promote";
-  if (move.captured) return "capture";
-  return "move";
-}
-
-function getSoundForTimelineEntry(entry: TimelineEntry): ChessSoundEvent {
-  const gameAfterMove = new Chess(entry.fen);
-
-  if (gameAfterMove.isCheckmate()) return "checkmate";
-  if (gameAfterMove.isCheck()) return "check";
-  if (entry.promotion) return "promote";
-  if (entry.san?.includes("x")) return "capture";
-  return "move";
-}
-
-function cloneGameWithHistory(gameToClone: Chess) {
-  const gameCopy = new Chess();
-  const pgn = gameToClone.pgn();
-
-  if (pgn) {
-    gameCopy.loadPgn(pgn);
-  }
-
-  return gameCopy;
-}
-
-function getGameSnapshot(gameToSnapshot: Chess): GameSnapshot {
-  return {
-    fen: gameToSnapshot.fen(),
-    pgn: gameToSnapshot.pgn(),
-  };
-}
-
-function loadGameSnapshot(snapshot: GameSnapshot) {
-  const gameCopy = new Chess();
-
-  if (snapshot.pgn) {
-    gameCopy.loadPgn(snapshot.pgn);
-  } else {
-    gameCopy.load(snapshot.fen);
-  }
-
-  return gameCopy;
-}
-
-function createInitialTimeline(): TimelineEntry[] {
-  return [{ ply: 0, fen: new Chess().fen() }];
-}
-
-function getMoveNumberForPly(ply: number) {
-  return Math.ceil(ply / 2);
-}
-
-function getRenderedPieceCode(fen: string, square: Square) {
-  const piece = new Chess(fen).get(square);
-
-  if (!piece) return null;
-
-  return `${piece.color}${piece.type.toUpperCase()}`;
-}
-
-function sortCapturedPieces(pieces: PieceSymbol[]) {
-  return [...pieces].sort(
-    (a, b) => CAPTURED_PIECE_ORDER.indexOf(a) - CAPTURED_PIECE_ORDER.indexOf(b),
-  );
-}
-
-function getCapturedPiecesFromTimeline(
-  timeline: TimelineEntry[],
-  currentPlyIndex: number,
-): CapturedPieces {
-  return timeline.slice(1, currentPlyIndex + 1).reduce<CapturedPieces>(
-    (capturedPieces, entry) => {
-      if (!entry.captured || entry.captured === "k") {
-        return capturedPieces;
-      }
-
-      if (entry.color === "w") {
-        capturedPieces.byWhite.push(entry.captured);
-      } else if (entry.color === "b") {
-        capturedPieces.byBlack.push(entry.captured);
-      }
-
-      return capturedPieces;
-    },
-    { byWhite: [], byBlack: [] },
-  );
-}
-
-function getCapturedValue(pieces: PieceSymbol[]) {
-  return pieces.reduce((total, piece) => total + PIECE_VALUES[piece], 0);
-}
-
-function getMaterialAdvantage(capturedPieces: CapturedPieces) {
-  return getCapturedValue(capturedPieces.byWhite) - getCapturedValue(capturedPieces.byBlack);
-}
-
-function buildMoveRows(timeline: TimelineEntry[]): MoveRow[] {
-  const moveRows: MoveRow[] = [];
-
-  timeline.slice(1).forEach((entry) => {
-    const moveNumber = entry.moveNumber ?? getMoveNumberForPly(entry.ply);
-    let row = moveRows.find((candidate) => candidate.moveNumber === moveNumber);
-
-    if (!row) {
-      row = { moveNumber };
-      moveRows.push(row);
-    }
-
-    if (entry.color === "w") {
-      row.white = entry;
-    } else if (entry.color === "b") {
-      row.black = entry;
-    }
-  });
-
-  if (timeline.length === 1) {
-    return [];
-  }
-
-  return moveRows;
-}
-
-function formatStartedAt(startedAt: Date) {
-  return new Intl.DateTimeFormat(undefined, {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  }).format(startedAt);
-}
-
-function formatEngineStatus(
-  engineStatus: EngineStatus,
-  isThinking: boolean,
-  isReplyPending: boolean,
-) {
-  if (engineStatus === "failed") return "Failed";
-  if (engineStatus === "loading") return "Loading";
-  if (isThinking) return "Thinking";
-  if (isReplyPending) return "Queued";
-  return "Ready";
-}
 
 function MoveTable({
   rows,
@@ -334,6 +281,12 @@ function MoveTable({
 
 function GameInfoPanel({
   startedAt,
+  playerColor,
+  timeControlLabel,
+  playerTimeRemainingSeconds,
+  endReason,
+  isGameCompleted,
+  canResign,
   moveRows,
   currentPlyIndex,
   latestPly,
@@ -343,12 +296,19 @@ function GameInfoPanel({
   onNextPly,
   onLastPly,
   onNewGame,
+  onResign,
   engineStatus,
   engineError,
   isThinking,
   isReplyPending,
 }: {
   startedAt: Date;
+  playerColor: PlayerColor;
+  timeControlLabel: string;
+  playerTimeRemainingSeconds: number | null;
+  endReason: GameEndReason;
+  isGameCompleted: boolean;
+  canResign: boolean;
   moveRows: MoveRow[];
   currentPlyIndex: number;
   latestPly: number;
@@ -358,6 +318,7 @@ function GameInfoPanel({
   onNextPly: () => void;
   onLastPly: () => void;
   onNewGame: () => void;
+  onResign: () => void;
   engineStatus: EngineStatus;
   engineError: string | null;
   isThinking: boolean;
@@ -379,11 +340,19 @@ function GameInfoPanel({
           </div>
           <div>
             <dt>Info</dt>
-            <dd>Standard vs Stockfish</dd>
+            <dd>{playerColor === "w" ? "White" : "Black"} vs Stockfish</dd>
           </div>
           <div>
             <dt>Time control</dt>
-            <dd>10 min</dd>
+            <dd>{timeControlLabel}</dd>
+          </div>
+          <div>
+            <dt>Clock</dt>
+            <dd>{formatClock(playerTimeRemainingSeconds)}</dd>
+          </div>
+          <div>
+            <dt>Status</dt>
+            <dd>{isGameCompleted ? getEndReasonLabel(endReason) : "Active"}</dd>
           </div>
           <div>
             <dt>Position</dt>
@@ -408,6 +377,11 @@ function GameInfoPanel({
         <button className="new-game-button" type="button" onClick={onNewGame}>
           New Game
         </button>
+        {canResign ? (
+          <button className="resign-button" type="button" onClick={onResign}>
+            Resign
+          </button>
+        ) : null}
       </section>
 
       <MoveTable
@@ -485,11 +459,564 @@ function CapturedPiecesRow({
   );
 }
 
-export default function App() {
+function SetupScreen() {
+  return (
+    <main className="prototype-shell">
+      <section className="auth-panel">
+        <h1>Chess Prototype Setup</h1>
+        <p>
+          Add `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` to your local
+          environment, then run the SQL in `supabase/schema.sql`.
+        </p>
+        <p className="muted-copy">
+          The board and client-side engines are ready, but account-backed games
+          need Supabase before the hub can load.
+        </p>
+      </section>
+    </main>
+  );
+}
+
+function LoadingScreen() {
+  return (
+    <main className="prototype-shell">
+      <div className="loading-panel">Loading prototype</div>
+    </main>
+  );
+}
+
+function ProtectedRoute({ children }: { children: ReactNode }) {
+  const { user, isLoading } = useAuth();
+
+  if (!isSupabaseConfigured) return <SetupScreen />;
+  if (isLoading) return <LoadingScreen />;
+  if (!user) return <Navigate to="/auth" replace />;
+
+  return children;
+}
+
+function AuthScreen() {
+  const { user, isLoading } = useAuth();
+  const navigate = useNavigate();
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [mode, setMode] = useState<"login" | "signup">("login");
+  const [message, setMessage] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (!isLoading && user) {
+      navigate("/", { replace: true });
+    }
+  }, [isLoading, navigate, user]);
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const client = requireSupabase();
+
+    setIsSubmitting(true);
+    setMessage(null);
+
+    const authResponse =
+      mode === "login"
+        ? await client.auth.signInWithPassword({ email, password })
+        : await client.auth.signUp({ email, password });
+
+    setIsSubmitting(false);
+
+    if (authResponse.error) {
+      setMessage(authResponse.error.message);
+      return;
+    }
+
+    if (authResponse.data.user && authResponse.data.session) {
+      await ensureUserRows(authResponse.data.user);
+    }
+
+    if (mode === "signup" && !authResponse.data.session) {
+      setMessage("Check your email to confirm your account, then sign in.");
+      return;
+    }
+
+    navigate("/", { replace: true });
+  }
+
+  if (!isSupabaseConfigured) return <SetupScreen />;
+
+  return (
+    <main className="prototype-shell">
+      <form className="auth-panel" onSubmit={handleSubmit}>
+        <h1>{mode === "login" ? "Sign in" : "Create account"}</h1>
+        <label>
+          Email
+          <input
+            autoComplete="email"
+            type="email"
+            value={email}
+            onChange={(event) => setEmail(event.target.value)}
+            required
+          />
+        </label>
+        <label>
+          Password
+          <input
+            autoComplete={mode === "login" ? "current-password" : "new-password"}
+            minLength={6}
+            type="password"
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+            required
+          />
+        </label>
+        {message ? <p className="form-message">{message}</p> : null}
+        <button type="submit" disabled={isSubmitting}>
+          {isSubmitting ? "Working" : mode === "login" ? "Sign in" : "Create account"}
+        </button>
+        <button
+          className="text-button"
+          type="button"
+          onClick={() => setMode(mode === "login" ? "signup" : "login")}
+        >
+          {mode === "login" ? "Create an account" : "I already have an account"}
+        </button>
+      </form>
+    </main>
+  );
+}
+
+function HubScreen() {
+  const { user } = useAuth();
+  const navigate = useNavigate();
+  const [games, setGames] = useState<SavedGame[]>([]);
+  const [isLoadingGames, setIsLoadingGames] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const activeGames = games.filter((game) => game.status === "active");
+  const latestActiveGame = activeGames[0];
+  const wins = games.filter((game) => getPlayerOutcome(game) === "Win").length;
+  const losses = games.filter((game) => getPlayerOutcome(game) === "Loss").length;
+  const draws = games.filter((game) => game.result === "draw").length;
+
+  useEffect(() => {
+    if (!user) return;
+    const client = requireSupabase();
+
+    void client
+      .from("games")
+      .select("*")
+      .eq("user_id", user.id)
+      .order("updated_at", { ascending: false })
+      .limit(20)
+      .then(({ data, error: loadError }) => {
+        if (loadError) {
+          setError(loadError.message);
+        } else {
+          setGames((data ?? []) as SavedGame[]);
+        }
+        setIsLoadingGames(false);
+      });
+  }, [user]);
+
+  function handleNewGame() {
+    navigate("/play/new");
+  }
+
+  return (
+    <main className="hub-shell">
+      <header className="hub-header">
+        <div>
+          <p className="eyebrow">Prototype hub</p>
+          <h1>Welcome back, {user?.email?.split("@")[0] ?? "player"}</h1>
+        </div>
+        <nav className="hub-nav" aria-label="Hub navigation">
+          <Link to="/settings">Settings</Link>
+          <button
+            type="button"
+            onClick={() => {
+              void requireSupabase().auth.signOut();
+            }}
+          >
+            Sign out
+          </button>
+        </nav>
+      </header>
+
+      {error ? <p className="hub-error">{error}</p> : null}
+
+      <section className="hub-actions" aria-label="Primary actions">
+        <button type="button" onClick={handleNewGame}>
+          New Game
+        </button>
+        <button
+          type="button"
+          disabled={!latestActiveGame}
+          onClick={() => latestActiveGame && navigate(`/play/${latestActiveGame.id}`)}
+        >
+          Resume Game
+        </button>
+        <button
+          type="button"
+          disabled={games.length === 0}
+          onClick={() => navigate("/history")}
+        >
+          Game History
+        </button>
+      </section>
+
+      <section className="stats-grid" aria-label="Game statistics">
+        <div>
+          <span>{games.length}</span>
+          <p>Games</p>
+        </div>
+        <div>
+          <span>{wins}</span>
+          <p>Wins</p>
+        </div>
+        <div>
+          <span>{losses}</span>
+          <p>Losses</p>
+        </div>
+        <div>
+          <span>{draws}</span>
+          <p>Draws</p>
+        </div>
+        <div>
+          <span>{activeGames.length}</span>
+          <p>Active</p>
+        </div>
+      </section>
+
+      <section className="mode-grid" aria-label="Modes">
+        <button className="mode-card" type="button" onClick={handleNewGame}>
+          <strong>Play vs Stockfish</strong>
+          <span>Start a saved account-backed game.</span>
+        </button>
+        <button
+          className="mode-card"
+          type="button"
+          disabled={games.length === 0}
+          onClick={() => navigate("/history")}
+        >
+          <strong>Game History</strong>
+          <span>Resume or review your saved games with the client-side Eval Bar.</span>
+        </button>
+        <div className="mode-card mode-card-disabled">
+          <strong>Opening Trainer</strong>
+          <span>Coming soon: scripted opening lines and repertoire practice.</span>
+        </div>
+        <div className="mode-card mode-card-disabled">
+          <strong>Practice Library</strong>
+          <span>Coming soon: saved studies, drills, and progress tracking.</span>
+        </div>
+      </section>
+
+      <section className="recent-games" aria-label="Recent games">
+        <h2>Recent games</h2>
+        {isLoadingGames ? <p className="muted-copy">Loading games</p> : null}
+        {!isLoadingGames && games.length === 0 ? (
+          <p className="muted-copy">No games yet. Start a new game to create your first save.</p>
+        ) : null}
+        <div className="game-list">
+          {games.map((game) => (
+            <article className="saved-game-row" key={game.id}>
+              <div>
+                <strong>{getPlayerOutcome(game)}</strong>
+                <span>
+                  {getSavedGameMoveCount(game)} plies | {getSavedGameSummary(game)} | {formatSavedGameDate(game.updated_at)}
+                </span>
+              </div>
+              <div className="saved-game-actions">
+                {game.status === "active" ? <Link to={`/play/${game.id}`}>Resume</Link> : null}
+                <Link to={`/review/${game.id}`}>Review</Link>
+              </div>
+            </article>
+          ))}
+        </div>
+      </section>
+    </main>
+  );
+}
+
+function HistoryScreen() {
+  const { user } = useAuth();
+  const [games, setGames] = useState<SavedGame[]>([]);
+  const [isLoadingGames, setIsLoadingGames] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!user) return;
+    const client = requireSupabase();
+
+    void client
+      .from("games")
+      .select("*")
+      .eq("user_id", user.id)
+      .order("updated_at", { ascending: false })
+      .then(({ data, error: loadError }) => {
+        if (loadError) {
+          setError(loadError.message);
+        } else {
+          setGames((data ?? []) as SavedGame[]);
+        }
+        setIsLoadingGames(false);
+      });
+  }, [user]);
+
+  return (
+    <main className="hub-shell">
+      <header className="hub-header">
+        <div>
+          <p className="eyebrow">Saved games</p>
+          <h1>Game History</h1>
+        </div>
+        <nav className="hub-nav" aria-label="History navigation">
+          <Link to="/">Hub</Link>
+          <Link to="/play/new">New Game</Link>
+        </nav>
+      </header>
+
+      {error ? <p className="hub-error">{error}</p> : null}
+
+      <section className="recent-games" aria-label="Game history">
+        {isLoadingGames ? <p className="muted-copy">Loading games</p> : null}
+        {!isLoadingGames && games.length === 0 ? (
+          <p className="muted-copy">No saved games yet. Start a new game to build your history.</p>
+        ) : null}
+        <div className="game-list">
+          {games.map((game) => (
+            <article className="saved-game-row" key={game.id}>
+              <div>
+                <strong>{getPlayerOutcome(game)}</strong>
+                <span>
+                  {getSavedGameMoveCount(game)} plies | {getSavedGameSummary(game)} | {formatSavedGameDate(game.updated_at)}
+                </span>
+              </div>
+              <div className="saved-game-actions">
+                {game.status === "active" ? <Link to={`/play/${game.id}`}>Resume</Link> : null}
+                <Link to={`/review/${game.id}`}>Review</Link>
+              </div>
+            </article>
+          ))}
+        </div>
+      </section>
+    </main>
+  );
+}
+
+function SettingsScreen() {
+  const { user } = useAuth();
+
+  return (
+    <main className="hub-shell">
+      <header className="hub-header">
+        <div>
+          <p className="eyebrow">Account</p>
+          <h1>Settings</h1>
+        </div>
+        <nav className="hub-nav" aria-label="Settings navigation">
+          <Link to="/">Hub</Link>
+          <button
+            type="button"
+            onClick={() => {
+              void requireSupabase().auth.signOut();
+            }}
+          >
+            Sign out
+          </button>
+        </nav>
+      </header>
+      <section className="settings-panel">
+        <dl>
+          <div>
+            <dt>Email</dt>
+            <dd>{user?.email}</dd>
+          </div>
+          <div>
+            <dt>Opponent depth</dt>
+            <dd>{DEFAULT_DEPTH}</dd>
+          </div>
+          <div>
+            <dt>Evaluation depth</dt>
+            <dd>{DEFAULT_EVALUATION_DEPTH}</dd>
+          </div>
+        </dl>
+        <p className="muted-copy">
+          Preference editing is intentionally small in v1; the saved rows are
+          created so settings can grow without changing the account model.
+        </p>
+      </section>
+    </main>
+  );
+}
+
+function PlayRoute() {
+  const { gameId } = useParams();
+  if (!gameId) return <Navigate to="/" replace />;
+
+  return <ChessGameScreen mode="play" gameId={gameId} />;
+}
+
+function ReviewRoute() {
+  const { gameId } = useParams();
+  if (!gameId) return <Navigate to="/" replace />;
+
+  return <ChessGameScreen mode="review" gameId={gameId} />;
+}
+
+function NewGameRoute() {
+  const { user } = useAuth();
+  const navigate = useNavigate();
+  const [playerColor, setPlayerColor] = useState<PlayerColor>(DEFAULT_PLAYER_COLOR);
+  const [selectedTimeControl, setSelectedTimeControl] = useState(DEFAULT_TIME_CONTROL);
+  const [error, setError] = useState<string | null>(null);
+  const [isCreating, setIsCreating] = useState(false);
+
+  async function startConfiguredGame() {
+    if (!user) return;
+    const client = requireSupabase();
+    const startedAt = new Date().toISOString();
+    const initialRemainingSeconds = getInitialRemainingSeconds(selectedTimeControl);
+
+    setIsCreating(true);
+    setError(null);
+
+    const { data, error: createError } = await client
+      .from("games")
+      .insert({
+        user_id: user.id,
+        mode: "stockfish",
+        status: "active",
+        started_at: startedAt,
+        updated_at: startedAt,
+        result: "ongoing",
+        pgn: "",
+        timeline: createInitialTimeline(),
+        current_ply: 0,
+        opponent_depth: DEFAULT_DEPTH,
+        player_color: playerColor,
+        time_control_label: selectedTimeControl.label,
+        base_seconds: selectedTimeControl.baseSeconds,
+        increment_seconds: selectedTimeControl.incrementSeconds,
+        player_time_remaining_seconds: initialRemainingSeconds,
+        end_reason: "ongoing",
+      })
+      .select("id")
+      .single();
+
+    setIsCreating(false);
+
+    if (createError) {
+      setError(createError.message);
+      return;
+    }
+
+    navigate(`/play/${data.id}`, { replace: true });
+  }
+
+  return (
+    <main className="app-shell">
+      <header className="game-route-header">
+        <Link to="/">Hub</Link>
+        <div>
+          <h1>New Game</h1>
+          <p>Choose your side and clock</p>
+        </div>
+        <Link to="/history">Game History</Link>
+      </header>
+
+      <div className="game-layout setup-layout">
+        <div className="board-column setup-board-column">
+          <div className="board-wrap">
+            <Chessboard
+              options={{
+                position: new Chess().fen(),
+                pieces: defaultPieces,
+                boardOrientation: playerColor === "w" ? "white" : "black",
+                allowDragging: false,
+              }}
+            />
+          </div>
+        </div>
+
+        <aside className="setup-panel" aria-label="New game options">
+          <section className="setup-section">
+            <h2>Side</h2>
+            <div className="segmented-control" role="group" aria-label="Choose side">
+              <button
+                className={playerColor === "w" ? "selected" : undefined}
+                type="button"
+                onClick={() => setPlayerColor("w")}
+              >
+                White
+              </button>
+              <button
+                className={playerColor === "b" ? "selected" : undefined}
+                type="button"
+                onClick={() => setPlayerColor("b")}
+              >
+                Black
+              </button>
+            </div>
+          </section>
+
+          <section className="setup-section">
+            <h2>Time Control</h2>
+            <div className="time-control-grid">
+              {TIME_CONTROL_OPTIONS.map((option) => (
+                <button
+                  className={selectedTimeControl.label === option.label ? "selected" : undefined}
+                  key={option.label}
+                  type="button"
+                  onClick={() => setSelectedTimeControl(option)}
+                >
+                  <span>{option.group}</span>
+                  <strong>{option.label}</strong>
+                  <small>{getTimeControlDescription(option)}</small>
+                </button>
+              ))}
+            </div>
+          </section>
+
+          {error ? <p className="engine-alert" role="alert">{error}</p> : null}
+
+          <button
+            className="start-game-button"
+            type="button"
+            disabled={isCreating}
+            onClick={() => {
+              void startConfiguredGame();
+            }}
+          >
+            {isCreating ? "Starting" : "Start Game"}
+          </button>
+        </aside>
+      </div>
+    </main>
+  );
+}
+
+function ChessGameScreen({
+  mode,
+  gameId,
+}: {
+  mode: GameScreenMode;
+  gameId: string;
+}) {
+  const { user } = useAuth();
+  const navigate = useNavigate();
   const [game, setGame] = useState(new Chess());
   const [gameStartedAt, setGameStartedAt] = useState(() => new Date());
+  const [playerColor, setPlayerColor] = useState<PlayerColor>(DEFAULT_PLAYER_COLOR);
+  const [timeControlLabel, setTimeControlLabel] = useState("Infinite");
+  const [baseSeconds, setBaseSeconds] = useState<number | null>(null);
+  const [incrementSeconds, setIncrementSeconds] = useState(0);
+  const [playerTimeRemainingSeconds, setPlayerTimeRemainingSeconds] = useState<number | null>(null);
+  const [endReason, setEndReason] = useState<GameEndReason>("ongoing");
+  const [savedGameStatus, setSavedGameStatus] = useState<"active" | "completed">("active");
   const [timeline, setTimeline] = useState<TimelineEntry[]>(() => createInitialTimeline());
   const [currentPlyIndex, setCurrentPlyIndex] = useState(0);
+  const [isGameLoaded, setIsGameLoaded] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "failed">("idle");
   const [isThinking, setIsThinking] = useState(false);
   const [isStockfishReplyPending, setIsStockfishReplyPending] = useState(false);
   const [premove, setPremove] = useState<Premove | null>(null);
@@ -502,11 +1029,15 @@ export default function App() {
   const [draggedSquare, setDraggedSquare] = useState<Square | null>(null);
   const [legalMoves, setLegalMoves] = useState<Move[]>([]);
   const [timelineAnimation, setTimelineAnimation] = useState<TimelineAnimation | null>(null);
-  const [isBoardTeleporting, setIsBoardTeleporting] = useState(false);
   const [boardWidth, setBoardWidth] = useState(0);
   const gameRef = useRef(game);
   const timelineRef = useRef(timeline);
   const currentPlyIndexRef = useRef(currentPlyIndex);
+  const playerColorRef = useRef<PlayerColor>(playerColor);
+  const baseSecondsRef = useRef<number | null>(baseSeconds);
+  const incrementSecondsRef = useRef(incrementSeconds);
+  const playerTimeRemainingSecondsRef = useRef<number | null>(playerTimeRemainingSeconds);
+  const savedGameStatusRef = useRef<"active" | "completed">(savedGameStatus);
   const engineRef = useRef<StockfishEngine | null>(null);
   const searchIdRef = useRef(0);
   const isThinkingRef = useRef(false);
@@ -518,17 +1049,20 @@ export default function App() {
   const boardWrapRef = useRef<HTMLDivElement | null>(null);
   const pendingStockfishTimeoutRef = useRef<number | null>(null);
   const timelineAnimationTimeoutRef = useRef<number | null>(null);
-  const boardTeleportTimeoutRef = useRef<number | null>(null);
   const suppressClickAfterDragRef = useRef(false);
   const activeSquareRef = useRef<Square | null>(null);
   const activeSourceRef = useRef<ActiveSource | null>(null);
+  const clockIntervalRef = useRef<number | null>(null);
+  const clockPersistIntervalRef = useRef<number | null>(null);
+  const clockStartedAtRef = useRef<number | null>(null);
+  const clockStartingSecondsRef = useRef<number | null>(null);
   const displayedFen = timeline[currentPlyIndex]?.fen ?? game.fen();
   const {
     evaluation,
     isLoading: isEvaluationLoading,
     isOffline: isEvaluationOffline,
     error: evaluationError,
-  } = useEvaluation(displayedFen, DEFAULT_EVALUATION_DEPTH);
+  } = useEvaluation(displayedFen, DEFAULT_EVALUATION_DEPTH, mode === "review");
   const displayedGame = useMemo(() => new Chess(displayedFen), [displayedFen]);
   const isViewingLatest = currentPlyIndex === timeline.length - 1;
   const latestPly = timeline.length - 1;
@@ -559,6 +1093,101 @@ export default function App() {
   }, [timelineAnimation]);
 
   useEffect(() => {
+    if (!user) return;
+    const client = requireSupabase();
+    let isActive = true;
+
+    const resetTimeoutId = window.setTimeout(() => {
+      if (!isActive) return;
+      setIsGameLoaded(false);
+      setLoadError(null);
+    }, 0);
+
+    void client
+      .from("games")
+      .select("*")
+      .eq("id", gameId)
+      .eq("user_id", user.id)
+      .single()
+      .then(({ data, error }) => {
+        if (!isActive) return;
+
+        if (error) {
+          setLoadError(error.message);
+          setIsGameLoaded(true);
+          return;
+        }
+
+        const savedGame = data as SavedGame;
+        const savedTimeline = parseSavedTimeline(savedGame.timeline);
+        const nextPlayerColor = getPlayerColor(savedGame);
+        const savedTimeControl = getTimeControlFromSavedGame(savedGame);
+        const loadedGame = savedGame.pgn
+          ? loadGameSnapshot({ fen: savedTimeline.at(-1)?.fen ?? new Chess().fen(), pgn: savedGame.pgn })
+          : new Chess(savedTimeline.at(-1)?.fen ?? new Chess().fen());
+        const nextPlyIndex = Math.max(
+          0,
+          Math.min(savedGame.current_ply, savedTimeline.length - 1),
+        );
+
+        gameRef.current = loadedGame;
+        timelineRef.current = savedTimeline;
+        currentPlyIndexRef.current = nextPlyIndex;
+        playerColorRef.current = nextPlayerColor;
+        baseSecondsRef.current = savedTimeControl.baseSeconds;
+        incrementSecondsRef.current = savedTimeControl.incrementSeconds;
+        let adjustedRemaining = savedTimeControl.remainingSeconds;
+        if (
+          savedGame.player_clock_started_at &&
+          savedGame.status === "active" &&
+          savedTimeControl.remainingSeconds !== null &&
+          loadedGame.turn() === nextPlayerColor
+        ) {
+          const elapsedSinceSave =
+            (Date.now() - new Date(savedGame.player_clock_started_at).getTime()) / 1000;
+          adjustedRemaining = Math.max(0, savedTimeControl.remainingSeconds - elapsedSinceSave);
+        }
+
+        if (savedGame.status === "active" && adjustedRemaining !== null && loadedGame.turn() === nextPlayerColor) {
+          clockStartedAtRef.current = Date.now();
+          clockStartingSecondsRef.current = adjustedRemaining;
+        } else {
+          clockStartedAtRef.current = null;
+          clockStartingSecondsRef.current = null;
+        }
+
+        playerTimeRemainingSecondsRef.current = adjustedRemaining;
+        savedGameStatusRef.current = savedGame.status;
+        setGame(loadedGame);
+        setTimeline(savedTimeline);
+        setCurrentPlyIndex(nextPlyIndex);
+        setGameStartedAt(new Date(savedGame.started_at));
+        setPlayerColor(nextPlayerColor);
+        setTimeControlLabel(savedTimeControl.label);
+        setBaseSeconds(savedTimeControl.baseSeconds);
+        setIncrementSeconds(savedTimeControl.incrementSeconds);
+        setPlayerTimeRemainingSeconds(adjustedRemaining);
+        setEndReason(savedGame.end_reason ?? "ongoing");
+        setSavedGameStatus(savedGame.status);
+        setIsGameLoaded(true);
+      });
+
+    return () => {
+      isActive = false;
+      window.clearTimeout(resetTimeoutId);
+    };
+  }, [gameId, user]);
+
+  useEffect(() => {
+    if (mode === "review") {
+      const timeoutId = window.setTimeout(() => {
+        setEngineStatus("ready");
+        setEngineError(null);
+      }, 0);
+
+      return () => window.clearTimeout(timeoutId);
+    }
+
     let isActive = true;
     const engine = new StockfishEngine();
     engineRef.current = engine;
@@ -582,7 +1211,7 @@ export default function App() {
       }
       engine.quit();
     };
-  }, []);
+  }, [mode]);
 
   useEffect(() => {
     if (!draggedSquare) return;
@@ -615,7 +1244,7 @@ export default function App() {
 
     const draggedPiece = displayedGame.get(draggedSquare);
     const canKeepDragging =
-      !displayedGame.isGameOver() && draggedPiece?.color === "w";
+      !displayedGame.isGameOver() && draggedPiece?.color === playerColorRef.current;
 
     if (!canKeepDragging) {
       const timeoutId = window.setTimeout(() => {
@@ -630,6 +1259,96 @@ export default function App() {
   }, [draggedSquare, engineStatus, isThinking, isStockfishReplyPending, displayedGame]);
 
   useEffect(() => {
+    if (
+      !isGameLoaded ||
+      mode !== "play" ||
+      engineStatus !== "ready" ||
+      isThinking ||
+      isStockfishReplyPending ||
+      !isBotTurn()
+    ) {
+      return;
+    }
+
+    scheduleStockfishReply(gameRef.current);
+    // This effect intentionally reads the latest game details from refs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    engineStatus,
+    isGameLoaded,
+    isStockfishReplyPending,
+    isThinking,
+    mode,
+    playerColor,
+    savedGameStatus,
+    currentPlyIndex,
+    timeline.length,
+  ]);
+
+  useEffect(() => {
+    if (
+      !isGameLoaded ||
+      mode !== "play" ||
+      savedGameStatus !== "active" ||
+      !isTimedGame(baseSeconds)
+    ) {
+      return;
+    }
+
+    clockIntervalRef.current = window.setInterval(() => {
+      const startedAt = clockStartedAtRef.current;
+      const startingSeconds = clockStartingSecondsRef.current;
+      if (startedAt === null || startingSeconds === null) return;
+
+      const elapsed = (Date.now() - startedAt) / 1000;
+      const nextSeconds = Math.max(0, startingSeconds - elapsed);
+
+      setPlayerClock(nextSeconds);
+
+      if (nextSeconds <= 0) {
+        if (clockIntervalRef.current !== null) {
+          window.clearInterval(clockIntervalRef.current);
+          clockIntervalRef.current = null;
+        }
+        void completeGame("timeout");
+      }
+    }, 250);
+
+    return () => {
+      if (clockIntervalRef.current !== null) {
+        window.clearInterval(clockIntervalRef.current);
+        clockIntervalRef.current = null;
+      }
+    };
+    // Reads clock from refs so it never needs to restart on every move.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [baseSeconds, isGameLoaded, mode, savedGameStatus]);
+
+  useEffect(() => {
+    if (
+      !isGameLoaded ||
+      mode !== "play" ||
+      savedGameStatus !== "active" ||
+      !isTimedGame(baseSeconds)
+    ) {
+      return;
+    }
+
+    clockPersistIntervalRef.current = window.setInterval(() => {
+      void persistClockOnly();
+    }, CLOCK_PERSIST_INTERVAL_MS);
+
+    return () => {
+      if (clockPersistIntervalRef.current !== null) {
+        window.clearInterval(clockPersistIntervalRef.current);
+        clockPersistIntervalRef.current = null;
+      }
+    };
+    // This effect intentionally persists the latest clock value from refs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [baseSeconds, gameId, isGameLoaded, mode, savedGameStatus, user]);
+
+  useEffect(() => {
     return () => {
       if (pendingStockfishTimeoutRef.current !== null) {
         window.clearTimeout(pendingStockfishTimeoutRef.current);
@@ -637,8 +1356,11 @@ export default function App() {
       if (timelineAnimationTimeoutRef.current !== null) {
         window.clearTimeout(timelineAnimationTimeoutRef.current);
       }
-      if (boardTeleportTimeoutRef.current !== null) {
-        window.clearTimeout(boardTeleportTimeoutRef.current);
+      if (clockIntervalRef.current !== null) {
+        window.clearInterval(clockIntervalRef.current);
+      }
+      if (clockPersistIntervalRef.current !== null) {
+        window.clearInterval(clockPersistIntervalRef.current);
       }
     };
   }, []);
@@ -660,9 +1382,129 @@ export default function App() {
     };
   }, []);
 
+  async function saveGameState(
+    nextGame: Chess,
+    nextTimeline: TimelineEntry[],
+    nextCurrentPly: number,
+    completionOverride?: SavedGameCompletion,
+  ) {
+    if (mode !== "play" || !user) return;
+
+    const client = requireSupabase();
+    const gameStatus = completionOverride ?? getSavedGameStatus(nextGame);
+    const updatedAt = new Date().toISOString();
+
+    setEndReason(gameStatus.endReason);
+    setCurrentSavedGameStatus(gameStatus.status);
+    setSaveStatus("saving");
+
+    const { error } = await client
+      .from("games")
+      .update({
+        pgn: nextGame.pgn(),
+        timeline: nextTimeline,
+        current_ply: nextCurrentPly,
+        updated_at: updatedAt,
+        status: gameStatus.status,
+        result: gameStatus.result,
+        completed_at: gameStatus.completedAt,
+        player_time_remaining_seconds: playerTimeRemainingSecondsRef.current !== null
+          ? Math.round(playerTimeRemainingSecondsRef.current)
+          : null,
+        player_clock_started_at: clockStartedAtRef.current
+          ? new Date(clockStartedAtRef.current).toISOString()
+          : null,
+        end_reason: gameStatus.endReason,
+      })
+      .eq("id", gameId)
+      .eq("user_id", user.id);
+
+    setSaveStatus(error ? "failed" : "saved");
+
+    if (error) {
+      setEngineError(`Save failed: ${error.message}`);
+    }
+  }
+
+  async function persistClockOnly() {
+    if (
+      mode !== "play" ||
+      !user ||
+      savedGameStatusRef.current === "completed" ||
+      !isTimedGame(baseSecondsRef.current)
+    ) {
+      return;
+    }
+
+    const now = Date.now();
+    const remaining = playerTimeRemainingSecondsRef.current;
+
+    if (clockStartedAtRef.current !== null) {
+      clockStartedAtRef.current = now;
+      clockStartingSecondsRef.current = remaining;
+    }
+
+    const { error } = await requireSupabase()
+      .from("games")
+      .update({
+        player_time_remaining_seconds: remaining !== null ? Math.round(remaining) : null,
+        player_clock_started_at: clockStartedAtRef.current
+          ? new Date(clockStartedAtRef.current).toISOString()
+          : null,
+        updated_at: new Date(now).toISOString(),
+      })
+      .eq("id", gameId)
+      .eq("user_id", user.id);
+
+    if (error) {
+      setSaveStatus("failed");
+      setEngineError(`Clock save failed: ${error.message}`);
+    }
+  }
+
+  async function completeGame(reason: Exclude<GameEndReason, "ongoing">) {
+    if (mode !== "play" || savedGameStatusRef.current === "completed") return;
+
+    const completedAt = new Date().toISOString();
+    const result: GameResult = reason === "draw" ? "draw" : getOpponentResult(playerColorRef.current);
+    const completion: SavedGameCompletion = {
+      status: "completed",
+      result,
+      completedAt,
+      endReason: reason,
+    };
+
+    clearPendingStockfishDelay();
+    searchIdRef.current += 1;
+    setEngineThinking(false);
+    setStockfishReplyPending(false);
+    setQueuedPremove(null);
+    clearInteractionState();
+    clockStartedAtRef.current = null;
+    clockStartingSecondsRef.current = null;
+    await saveGameState(gameRef.current, timelineRef.current, currentPlyIndexRef.current, completion);
+  }
+
   function setCurrentGame(nextGame: Chess) {
     gameRef.current = nextGame;
     setGame(nextGame);
+  }
+
+  function setPlayerClock(nextSeconds: number | null) {
+    const boundedSeconds = nextSeconds === null ? null : Math.max(0, nextSeconds);
+    playerTimeRemainingSecondsRef.current = boundedSeconds;
+    setPlayerTimeRemainingSeconds(boundedSeconds);
+  }
+
+  function armClock(remainingSeconds: number) {
+    const now = Date.now();
+    clockStartedAtRef.current = now;
+    clockStartingSecondsRef.current = remainingSeconds;
+  }
+
+  function setCurrentSavedGameStatus(nextStatus: "active" | "completed") {
+    savedGameStatusRef.current = nextStatus;
+    setSavedGameStatus(nextStatus);
   }
 
   function setTimelineEntries(nextTimeline: TimelineEntry[]) {
@@ -717,27 +1559,6 @@ export default function App() {
     }
   }
 
-  function clearBoardTeleport(shouldUpdateState = true) {
-    if (boardTeleportTimeoutRef.current !== null) {
-      window.clearTimeout(boardTeleportTimeoutRef.current);
-      boardTeleportTimeoutRef.current = null;
-    }
-
-    if (shouldUpdateState) {
-      setIsBoardTeleporting(false);
-    }
-  }
-
-  function teleportNextBoardRender() {
-    clearBoardTeleport(false);
-    setIsBoardTeleporting(true);
-
-    boardTeleportTimeoutRef.current = window.setTimeout(() => {
-      boardTeleportTimeoutRef.current = null;
-      setIsBoardTeleporting(false);
-    }, 0);
-  }
-
   function startTimelineAnimation(entry: TimelineEntry) {
     if (!entry.from || !entry.to) return;
 
@@ -775,14 +1596,29 @@ export default function App() {
       captured: move.captured,
     };
 
-    setTimelineEntries([...previousTimeline, nextEntry]);
+    const nextTimeline = [...previousTimeline, nextEntry];
+
+    setTimelineEntries(nextTimeline);
 
     if (wasViewingLatest) {
       setViewedPlyIndex(nextPly);
     }
+
+    void saveGameState(gameAfterMove, nextTimeline, nextPly);
+  }
+
+  function isBotTurn(gameToCheck = gameRef.current) {
+    return (
+      mode === "play" &&
+      savedGameStatusRef.current === "active" &&
+      currentPlyIndexRef.current === timelineRef.current.length - 1 &&
+      !gameToCheck.isGameOver() &&
+      gameToCheck.turn() !== playerColorRef.current
+    );
   }
 
   function scheduleStockfishReply(gameBeforeStockfishMove: Chess) {
+    if (!isBotTurn(gameBeforeStockfishMove)) return;
     scheduleStockfishSnapshot(getGameSnapshot(gameBeforeStockfishMove), STOCKFISH_REPLY_DELAY_MS);
   }
 
@@ -799,6 +1635,8 @@ export default function App() {
 
   async function makeStockfishMove(snapshot: GameSnapshot) {
     const engine = engineRef.current;
+    if (!isBotTurn(loadGameSnapshot(snapshot))) return;
+
     if (!engine) {
       setEngineStatus("failed");
       setEngineError("Stockfish engine has not been created yet.");
@@ -834,6 +1672,9 @@ export default function App() {
 
       if (move) {
         setCurrentGame(gameCopy);
+        if (isTimedGame(baseSecondsRef.current)) {
+          armClock(playerTimeRemainingSecondsRef.current ?? 0);
+        }
         appendTimelineMove(gameCopy, move);
         playChessSound(getSoundForMove(gameCopy, move));
       }
@@ -869,18 +1710,23 @@ export default function App() {
     return isThinkingRef.current || isStockfishReplyPendingRef.current;
   }
 
-  function canSelectWhitePieces() {
-    return !displayedGame.isGameOver();
+  function isGameActive() {
+    return savedGameStatusRef.current === "active" && !gameRef.current.isGameOver();
   }
 
-  function canMoveWhitePieces() {
+  function canSelectPlayerPieces() {
+    return mode === "play" && isGameActive();
+  }
+
+  function canMovePlayerPieces() {
     const currentGame = gameRef.current;
 
     return (
-      currentGame.turn() === "w" &&
+      currentGame.turn() === playerColorRef.current &&
+      mode === "play" &&
       currentPlyIndexRef.current === timelineRef.current.length - 1 &&
       !isStockfishThinking() &&
-      !currentGame.isGameOver()
+      isGameActive()
     );
   }
 
@@ -889,8 +1735,9 @@ export default function App() {
 
     return (
       currentPlyIndexRef.current === timelineRef.current.length - 1 &&
-      !currentGame.isGameOver() &&
-      (currentGame.turn() !== "w" || isStockfishThinking())
+      mode === "play" &&
+      isGameActive() &&
+      (currentGame.turn() !== playerColorRef.current || isStockfishThinking())
     );
   }
 
@@ -902,7 +1749,10 @@ export default function App() {
     const sourcePiece = displayedGame.get(sourceSquare);
     const targetPiece = displayedGame.get(targetSquare);
 
-    return sourcePiece?.color === "w" && targetPiece?.color !== "w";
+    return (
+      sourcePiece?.color === playerColorRef.current &&
+      targetPiece?.color !== playerColorRef.current
+    );
   }
 
   function getLegalMovesForSquare(square: Square, sourceGame = gameRef.current) {
@@ -930,7 +1780,7 @@ export default function App() {
 
   function isSelectableHumanPiece(square: Square) {
     const piece = displayedGame.get(square);
-    return canSelectWhitePieces() && piece?.color === "w";
+    return canSelectPlayerPieces() && piece?.color === playerColorRef.current;
   }
 
   function setSelectedSquare(square: Square | null) {
@@ -992,6 +1842,11 @@ export default function App() {
 
     clearInteractionState();
     setCurrentGame(gameCopy);
+    if (isTimedGame(baseSecondsRef.current)) {
+      setPlayerClock((playerTimeRemainingSecondsRef.current ?? 0) + incrementSecondsRef.current);
+      clockStartedAtRef.current = null;
+      clockStartingSecondsRef.current = null;
+    }
     appendTimelineMove(gameCopy, move);
     playChessSound(getSoundForMove(gameCopy, move));
 
@@ -1022,7 +1877,7 @@ export default function App() {
 
     const selectedPiece = sourceGame.get(selectedSquare);
 
-    if (selectedPiece?.color !== "w") {
+    if (selectedPiece?.color !== playerColorRef.current) {
       setSelectedSquare(null);
       setSelectedSource(null);
       setLegalMoves([]);
@@ -1070,7 +1925,7 @@ export default function App() {
   }
 
   function makeMove(sourceSquare: Square, targetSquare: Square) {
-    if (!canMoveWhitePieces()) {
+    if (!canMovePlayerPieces()) {
       return false;
     }
 
@@ -1088,6 +1943,11 @@ export default function App() {
     }
 
     unlockAudio();
+    if (isTimedGame(baseSecondsRef.current)) {
+      setPlayerClock((playerTimeRemainingSecondsRef.current ?? 0) + incrementSecondsRef.current);
+      clockStartedAtRef.current = null;
+      clockStartingSecondsRef.current = null;
+    }
     setQueuedPremove(null);
     clearInteractionState();
     setCurrentGame(gameCopy);
@@ -1125,7 +1985,7 @@ export default function App() {
     }
 
     if (activeSquare && legalMoves.some((move) => move.to === square)) {
-      if (canMoveWhitePieces()) {
+      if (canMovePlayerPieces()) {
         void makeMove(activeSquare, square);
       }
 
@@ -1157,7 +2017,7 @@ export default function App() {
       if (canSetPremove()) {
         setQueuedPremove(null);
       }
-      beginDrag(square, canMoveWhitePieces());
+      beginDrag(square, canMovePlayerPieces());
       activateSquare(square, "drag");
       return;
     }
@@ -1255,23 +2115,15 @@ export default function App() {
   }
 
   function startNewGame() {
-    clearPendingStockfishDelay();
-    clearTimelineAnimation();
-    teleportNextBoardRender();
-    searchIdRef.current += 1;
-    setEngineThinking(false);
-    setStockfishReplyPending(false);
-    setQueuedPremove(null);
-    clearInteractionState();
+    navigate("/play/new");
+  }
 
-    const freshGame = new Chess();
-    const freshTimeline = createInitialTimeline();
+  function resignGame() {
+    if (savedGameStatusRef.current === "completed") return;
+    const didConfirm = window.confirm("Resign this game?");
+    if (!didConfirm) return;
 
-    setCurrentGame(freshGame);
-    setTimelineEntries(freshTimeline);
-    setViewedPlyIndex(0);
-    setGameStartedAt(new Date());
-    setEngineError(null);
+    void completeGame("resignation");
   }
 
   function buildCustomSquareStyles(): Record<string, CSSProperties> {
@@ -1314,16 +2166,50 @@ export default function App() {
   const animatedPiece = timelineAnimation
     ? defaultPieces[timelineAnimation.piece]
     : null;
+  const boardOrientation = playerColor === "w" ? "white" : "black";
+  const showEvaluationBar = mode === "review";
   const timelineAnimationStyle = getTimelineAnimationStyle(
     timelineAnimation,
     boardWidth,
+    boardOrientation,
   );
+
+  if (!isGameLoaded) {
+    return <LoadingScreen />;
+  }
+
+  if (loadError) {
+    return (
+      <main className="prototype-shell">
+        <section className="auth-panel">
+          <h1>Game unavailable</h1>
+          <p className="form-message">{loadError}</p>
+          <Link to="/">Back to hub</Link>
+        </section>
+      </main>
+    );
+  }
 
   return (
     <main className="app-shell">
-      <h1>Chess vs Stockfish</h1>
+      <header className="game-route-header">
+        <Link to="/">Hub</Link>
+        <div>
+          <h1>{mode === "review" ? "Game Review" : "Chess vs Stockfish"}</h1>
+          <p>
+            {mode === "review"
+              ? "Review mode: moves are locked, Eval Bar remains active"
+              : saveStatus === "saving"
+                ? "Saving game"
+                : saveStatus === "failed"
+                  ? "Save failed"
+                  : "Saved game"}
+          </p>
+        </div>
+        {mode === "play" ? <Link to={`/review/${gameId}`}>Review</Link> : <Link to="/history">Game History</Link>}
+      </header>
 
-      <div className="game-layout">
+      <div className={`game-layout ${showEvaluationBar ? "" : "game-layout-no-eval"}`}>
         <div className="board-column">
           <CapturedPiecesRow
             capturedPieces={capturedPieces.byBlack}
@@ -1331,26 +2217,29 @@ export default function App() {
             advantage={blackMaterialAdvantage}
             side="top"
           />
-          <div className="board-with-evaluation">
-            <EvaluationBar
-              evaluation={evaluation}
-              isLoading={isEvaluationLoading}
-              isOffline={isEvaluationOffline}
-              error={evaluationError}
-              targetDepth={DEFAULT_EVALUATION_DEPTH}
-            />
+          <div className={`board-with-evaluation ${showEvaluationBar ? "" : "board-without-evaluation"}`}>
+            {showEvaluationBar ? (
+              <EvaluationBar
+                evaluation={evaluation}
+                isLoading={isEvaluationLoading}
+                isOffline={isEvaluationOffline}
+                error={evaluationError}
+                targetDepth={DEFAULT_EVALUATION_DEPTH}
+              />
+            ) : null}
             <div className="board-wrap" ref={boardWrapRef}>
               <Chessboard
                 options={{
                   position: displayedFen,
                   pieces: timelinePieces,
+                  boardOrientation,
                   squareStyles: buildCustomSquareStyles(),
-                  showAnimations: !timelineAnimation && !isBoardTeleporting,
+                  showAnimations: !timelineAnimation,
                   animationDurationInMs: TIMELINE_MOVE_ANIMATION_MS,
-                  allowDragging: isViewingLatest && canSelectWhitePieces(),
+                  allowDragging: isViewingLatest && canSelectPlayerPieces(),
                   canDragPiece: ({ piece, square }) =>
                     isViewingLatest &&
-                    piece.pieceType.startsWith("w") &&
+                    piece.pieceType.startsWith(playerColorRef.current) &&
                     isSquare(square) &&
                     isSelectableHumanPiece(square),
                   draggingPieceGhostStyle: draggedSquare && isDraggingRef.current
@@ -1395,6 +2284,12 @@ export default function App() {
 
         <GameInfoPanel
           startedAt={gameStartedAt}
+          playerColor={playerColor}
+          timeControlLabel={timeControlLabel}
+          playerTimeRemainingSeconds={playerTimeRemainingSeconds}
+          endReason={endReason}
+          isGameCompleted={savedGameStatus === "completed"}
+          canResign={mode === "play" && savedGameStatus === "active"}
           moveRows={moveRows}
           currentPlyIndex={currentPlyIndex}
           latestPly={latestPly}
@@ -1404,6 +2299,7 @@ export default function App() {
           onNextPly={goToNextPly}
           onLastPly={goToLastPly}
           onNewGame={startNewGame}
+          onResign={resignGame}
           engineStatus={engineStatus}
           engineError={engineError}
           isThinking={isThinking}
@@ -1414,15 +2310,77 @@ export default function App() {
   );
 }
 
+export default function App() {
+  return (
+    <BrowserRouter>
+      <AuthProvider>
+        <Routes>
+          <Route path="/auth" element={<AuthScreen />} />
+          <Route
+            path="/"
+            element={
+              <ProtectedRoute>
+                <HubScreen />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/play/new"
+            element={
+              <ProtectedRoute>
+                <NewGameRoute />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/play/:gameId"
+            element={
+              <ProtectedRoute>
+                <PlayRoute />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/history"
+            element={
+              <ProtectedRoute>
+                <HistoryScreen />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/review/:gameId"
+            element={
+              <ProtectedRoute>
+                <ReviewRoute />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/settings"
+            element={
+              <ProtectedRoute>
+                <SettingsScreen />
+              </ProtectedRoute>
+            }
+          />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </AuthProvider>
+    </BrowserRouter>
+  );
+}
+
 function getTimelineAnimationStyle(
   animation: TimelineAnimation | null,
   boardWidth: number,
+  boardOrientation: "white" | "black",
 ): CSSProperties | undefined {
   if (!animation || boardWidth <= 0) return undefined;
 
   const squareSize = boardWidth / 8;
-  const from = getRelativeCoords("white", boardWidth, 8, 8, animation.from);
-  const to = getRelativeCoords("white", boardWidth, 8, 8, animation.to);
+  const from = getRelativeCoords(boardOrientation, boardWidth, 8, 8, animation.from);
+  const to = getRelativeCoords(boardOrientation, boardWidth, 8, 8, animation.to);
 
   return {
     "--timeline-animation-duration": `${TIMELINE_MOVE_ANIMATION_MS}ms`,
