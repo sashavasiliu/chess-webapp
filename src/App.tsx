@@ -32,22 +32,23 @@ const PIECE_VALUES: Record<PieceSymbol, number> = {
 const CAPTURED_PIECE_ORDER: PieceSymbol[] = ["q", "r", "b", "n", "p"];
 const CAPTURED_PIECE_SYMBOLS: Record<"w" | "b", Record<PieceSymbol, string>> = {
   w: {
-    p: "♙",
-    n: "♘",
-    b: "♗",
-    r: "♖",
-    q: "♕",
-    k: "♔",
+    p: "\u2659",
+    n: "\u2658",
+    b: "\u2657",
+    r: "\u2656",
+    q: "\u2655",
+    k: "\u2654",
   },
   b: {
-    p: "♟",
-    n: "♞",
-    b: "♝",
-    r: "♜",
-    q: "♛",
-    k: "♚",
+    p: "\u265f",
+    n: "\u265e",
+    b: "\u265d",
+    r: "\u265c",
+    q: "\u265b",
+    k: "\u265a",
   },
 };
+
 type EngineStatus = "loading" | "ready" | "failed";
 type ActiveSource = "click" | "drag";
 type Premove = {
@@ -264,6 +265,18 @@ function formatStartedAt(startedAt: Date) {
   }).format(startedAt);
 }
 
+function formatEngineStatus(
+  engineStatus: EngineStatus,
+  isThinking: boolean,
+  isReplyPending: boolean,
+) {
+  if (engineStatus === "failed") return "Failed";
+  if (engineStatus === "loading") return "Loading";
+  if (isThinking) return "Thinking";
+  if (isReplyPending) return "Queued";
+  return "Ready";
+}
+
 function MoveTable({
   rows,
   currentPlyIndex,
@@ -330,6 +343,10 @@ function GameInfoPanel({
   onNextPly,
   onLastPly,
   onNewGame,
+  engineStatus,
+  engineError,
+  isThinking,
+  isReplyPending,
 }: {
   startedAt: Date;
   moveRows: MoveRow[];
@@ -341,7 +358,17 @@ function GameInfoPanel({
   onNextPly: () => void;
   onLastPly: () => void;
   onNewGame: () => void;
+  engineStatus: EngineStatus;
+  engineError: string | null;
+  isThinking: boolean;
+  isReplyPending: boolean;
 }) {
+  const formattedEngineStatus = formatEngineStatus(
+    engineStatus,
+    isThinking,
+    isReplyPending,
+  );
+
   return (
     <aside className="game-panel" aria-label="Game information">
       <section className="game-details" aria-label="Game details">
@@ -364,7 +391,19 @@ function GameInfoPanel({
               Ply {currentPlyIndex} / {latestPly}
             </dd>
           </div>
+          <div>
+            <dt>Engine</dt>
+            <dd className={`engine-status engine-status-${engineStatus}`}>
+              {formattedEngineStatus}
+            </dd>
+          </div>
         </dl>
+
+        {engineError ? (
+          <p className="engine-alert" role="alert">
+            {engineError}
+          </p>
+        ) : null}
 
         <button className="new-game-button" type="button" onClick={onNewGame}>
           New Game
@@ -455,7 +494,7 @@ export default function App() {
   const [isStockfishReplyPending, setIsStockfishReplyPending] = useState(false);
   const [premove, setPremove] = useState<Premove | null>(null);
   const [depth] = useState(DEFAULT_DEPTH);
-  const [, setEngineError] = useState<string | null>(null);
+  const [engineError, setEngineError] = useState<string | null>(null);
   const [engineStatus, setEngineStatus] = useState<EngineStatus>("loading");
   const [activeSquare, setActiveSquare] = useState<Square | null>(null);
   const [activeSource, setActiveSource] = useState<ActiveSource | null>(null);
@@ -488,6 +527,7 @@ export default function App() {
     evaluation,
     isLoading: isEvaluationLoading,
     isOffline: isEvaluationOffline,
+    error: evaluationError,
   } = useEvaluation(displayedFen, DEFAULT_EVALUATION_DEPTH);
   const displayedGame = useMemo(() => new Chess(displayedFen), [displayedFen]);
   const isViewingLatest = currentPlyIndex === timeline.length - 1;
@@ -522,8 +562,6 @@ export default function App() {
     let isActive = true;
     const engine = new StockfishEngine();
     engineRef.current = engine;
-    setEngineStatus("loading");
-    setEngineError(null);
 
     void engine
       .ready()
@@ -551,8 +589,14 @@ export default function App() {
 
     function clearCanceledDrag(event: KeyboardEvent | PointerEvent | MouseEvent) {
       if ("key" in event && event.key !== "Escape") return;
-      endDrag();
-      clearInteractionState();
+      isDraggingRef.current = false;
+      isMoveBlockingDragRef.current = false;
+      draggedSquareRef.current = null;
+      setDraggedSquare(null);
+      setSelectedSquare(null);
+      setSelectedSource(null);
+      setHoveredSquare(null);
+      setLegalMoves([]);
     }
 
     window.addEventListener("keydown", clearCanceledDrag);
@@ -568,16 +612,34 @@ export default function App() {
 
   useEffect(() => {
     if (!draggedSquare) return;
-    if (!isSelectableHumanPiece(draggedSquare)) {
-      endDrag();
+
+    const draggedPiece = displayedGame.get(draggedSquare);
+    const canKeepDragging =
+      !displayedGame.isGameOver() && draggedPiece?.color === "w";
+
+    if (!canKeepDragging) {
+      const timeoutId = window.setTimeout(() => {
+        isDraggingRef.current = false;
+        isMoveBlockingDragRef.current = false;
+        draggedSquareRef.current = null;
+        setDraggedSquare(null);
+      }, 0);
+
+      return () => window.clearTimeout(timeoutId);
     }
-  }, [draggedSquare, engineStatus, isThinking, isStockfishReplyPending, displayedFen]);
+  }, [draggedSquare, engineStatus, isThinking, isStockfishReplyPending, displayedGame]);
 
   useEffect(() => {
     return () => {
-      clearPendingStockfishDelay(false);
-      clearTimelineAnimation(false);
-      clearBoardTeleport(false);
+      if (pendingStockfishTimeoutRef.current !== null) {
+        window.clearTimeout(pendingStockfishTimeoutRef.current);
+      }
+      if (timelineAnimationTimeoutRef.current !== null) {
+        window.clearTimeout(timelineAnimationTimeoutRef.current);
+      }
+      if (boardTeleportTimeoutRef.current !== null) {
+        window.clearTimeout(boardTeleportTimeoutRef.current);
+      }
     };
   }, []);
 
@@ -1274,6 +1336,8 @@ export default function App() {
               evaluation={evaluation}
               isLoading={isEvaluationLoading}
               isOffline={isEvaluationOffline}
+              error={evaluationError}
+              targetDepth={DEFAULT_EVALUATION_DEPTH}
             />
             <div className="board-wrap" ref={boardWrapRef}>
               <Chessboard
@@ -1340,6 +1404,10 @@ export default function App() {
           onNextPly={goToNextPly}
           onLastPly={goToLastPly}
           onNewGame={startNewGame}
+          engineStatus={engineStatus}
+          engineError={engineError}
+          isThinking={isThinking}
+          isReplyPending={isStockfishReplyPending}
         />
       </div>
     </main>

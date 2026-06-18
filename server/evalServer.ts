@@ -2,6 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync } from "node:fs";
 import { createServer, type ServerResponse } from "node:http";
 import { URL } from "node:url";
+import { validateFen } from "chess.js";
 
 type Evaluation =
   | {
@@ -330,6 +331,12 @@ function getDepth(value: unknown) {
   return Math.max(1, Math.min(MAX_DEPTH, Math.floor(parsedDepth)));
 }
 
+function getFenValidationError(fen: string) {
+  const validation = validateFen(fen);
+
+  return validation.ok ? null : validation.error ?? "Invalid FEN.";
+}
+
 const evaluator = new NativeStockfishEvaluator(process.env.STOCKFISH_PATH);
 const port = Number(process.env.PORT ?? DEFAULT_PORT);
 
@@ -361,11 +368,18 @@ const server = createServer((request, response) => {
     return;
   }
 
-  const fen = requestUrl.searchParams.get("fen") ?? "";
+  const fen = (requestUrl.searchParams.get("fen") ?? "").trim();
   const depth = getDepth(requestUrl.searchParams.get("depth"));
 
   if (!fen) {
     writeJson(response, 400, { error: "Missing required query parameter: fen" });
+    return;
+  }
+
+  const fenValidationError = getFenValidationError(fen);
+
+  if (fenValidationError) {
+    writeJson(response, 400, { error: fenValidationError });
     return;
   }
 

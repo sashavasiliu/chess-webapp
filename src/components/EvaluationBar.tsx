@@ -4,6 +4,8 @@ type EvaluationBarProps = {
   evaluation: Evaluation | null;
   isLoading: boolean;
   isOffline: boolean;
+  error: string | null;
+  targetDepth: number;
 };
 
 const VISUAL_CP_LIMIT = 1000;
@@ -34,15 +36,42 @@ function formatEvaluation(evaluation: Evaluation | null) {
   return `${pawns >= 0 ? "+" : ""}${pawns.toFixed(1)}`;
 }
 
+function formatDepthLabel(
+  evaluation: Evaluation | null,
+  isLoading: boolean,
+  isOffline: boolean,
+  targetDepth: number,
+) {
+  if (isOffline) return "Unavailable";
+  if (!evaluation) return `Depth ${targetDepth}`;
+  if (isLoading && evaluation.depth < targetDepth) {
+    return `Depth ${evaluation.depth} / ${targetDepth}`;
+  }
+
+  return `Depth ${evaluation.depth}`;
+}
+
 export function EvaluationBar({
   evaluation,
   isLoading,
   isOffline,
+  error,
+  targetDepth,
 }: EvaluationBarProps) {
   const whiteShare = getWhiteShare(isOffline ? null : evaluation);
+  const depthText = formatDepthLabel(
+    evaluation,
+    isLoading,
+    isOffline,
+    targetDepth,
+  );
 
   return (
-    <div className="evaluation-stack" aria-label="Local Stockfish evaluation">
+    <div
+      className="evaluation-stack"
+      aria-label={error ? `Eval Bar failed: ${error}` : `Eval Bar, ${depthText}`}
+      title={error ?? undefined}
+    >
       <div className="evaluation-bar" aria-hidden="true">
         <div
           className="evaluation-bar-white"
@@ -51,7 +80,8 @@ export function EvaluationBar({
         <div className="evaluation-value">{formatEvaluation(isOffline ? null : evaluation)}</div>
       </div>
       <div className="evaluation-status" aria-live="polite">
-        {isOffline ? "local eval offline" : isLoading ? "analyzing" : "local eval"}
+        <span>Eval Bar</span>
+        <span>{depthText}</span>
       </div>
     </div>
   );

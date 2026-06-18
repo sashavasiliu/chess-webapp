@@ -4,7 +4,7 @@ Chess web app with Stockfish, premoves, timeline navigation, sounds, and capture
 
 ## Features
 
-- Play as White against the bundled Stockfish engine.
+- Play as White against the bundled Stockfish opponent engine.
 - Drag-and-drop and click-to-move controls.
 - Premove support while Stockfish is thinking or Black is to move.
 - Legal move, capture, selected-square, hover, and premove highlights.
@@ -12,7 +12,7 @@ Chess web app with Stockfish, premoves, timeline navigation, sounds, and capture
 - Animated timeline move playback.
 - Captured-piece rows with material advantage.
 - Move, capture, check, checkmate, and promotion sounds.
-- Local native Stockfish evaluation bar for the displayed timeline position.
+- Client-side Stockfish evaluation bar for the displayed timeline position.
 - New game reset.
 
 ## Requirements
@@ -34,22 +34,18 @@ npm run dev
 
 Vite prints the local development URL after the server starts.
 
-## Local Native Evaluation
+The opponent engine and evaluation engine both run in the browser from the bundled Stockfish assets. No native Stockfish install, `STOCKFISH_PATH`, or eval server is needed.
 
-The app can show a local native Stockfish evaluation bar beside the board. The browser Stockfish worker still handles gameplay; the local Node server is only for evaluation.
+## Browser Evaluation
 
-Set `STOCKFISH_PATH` to your native Stockfish executable, then run the eval server and app in two terminals:
+The app uses two separate Stockfish worker instances:
 
-```powershell
-$env:STOCKFISH_PATH="C:\Tools\Stockfish\stockfish-windows-x86-64-avx2.exe"
-npm run dev:server
-```
+- `src/stockfishEngine.ts` powers the opponent move search and can be tuned for difficulty.
+- `src/evaluationEngine.ts` powers the evaluation bar and runs independently from opponent difficulty.
 
-```powershell
-npm run dev:app
-```
+This keeps gameplay and analysis from canceling or delaying each other. If the browser Stockfish assets fail to load, the board remains playable and the evaluation bar shows a failed state.
 
-The app calls `GET /api/eval?fen=<encodedFen>&depth=14` through the Vite dev proxy. If the eval server is not running, or `STOCKFISH_PATH` is missing or invalid, the board remains playable and the eval bar shows `local eval offline`.
+`server/evalServer.ts` is legacy/dev-only native evaluation code and is not required for the hosted static app.
 
 ## Build
 

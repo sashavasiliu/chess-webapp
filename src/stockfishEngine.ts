@@ -48,7 +48,9 @@ export class StockfishEngine {
     try {
       await this.initPromise;
     } catch (error) {
-      throw new Error(`Stockfish is not ready: ${getErrorMessage(error)}`);
+      throw new Error(`Stockfish is not ready: ${getErrorMessage(error)}`, {
+        cause: error,
+      });
     }
 
     if (!this.worker || !this.isInitialized) {
@@ -276,7 +278,10 @@ async function preflightAsset(path: string, kind: AssetKind) {
   try {
     response = await fetch(path, { cache: "no-store" });
   } catch (error) {
-    throw new Error(`Could not fetch Stockfish ${kind} asset at ${path}: ${getErrorMessage(error)}`);
+    throw new Error(
+      `Could not fetch Stockfish ${kind} asset at ${path}: ${getErrorMessage(error)}`,
+      { cause: error },
+    );
   }
 
   const contentType = response.headers.get("content-type") ?? "";
