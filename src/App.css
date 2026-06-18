@@ -1,0 +1,333 @@
+.app-shell {
+  min-height: 100svh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 28px;
+  box-sizing: border-box;
+  padding: 34px 20px 28px;
+}
+
+.app-shell h1 {
+  margin: 0;
+  color: #f5f0e8;
+  font-size: clamp(2rem, 4.5vw, 3.15rem);
+  font-weight: 600;
+  line-height: 1;
+  text-align: center;
+}
+
+.game-layout {
+  width: min(100%, 960px);
+  display: grid;
+  grid-template-columns: minmax(360px, 560px) 320px;
+  align-items: start;
+  justify-content: center;
+  gap: 32px;
+}
+
+.board-column {
+  width: min(100%, 560px);
+  max-width: calc(100svh - 94px);
+  display: grid;
+  grid-template-rows: 24px auto 24px;
+  gap: 7px;
+}
+
+.captured-row {
+  min-height: 24px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: rgba(245, 240, 232, 0.78);
+  line-height: 1;
+}
+
+.captured-row-top {
+  justify-content: flex-start;
+}
+
+.captured-row-bottom {
+  justify-content: flex-end;
+}
+
+.captured-pieces {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 1px;
+}
+
+.captured-piece {
+  width: 17px;
+  display: inline-flex;
+  justify-content: center;
+  font-size: 1.1rem;
+}
+
+.material-advantage {
+  color: #f5f0e8;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.board-wrap {
+  position: relative;
+  width: min(100%, 560px);
+  max-width: 100%;
+  aspect-ratio: 1;
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow:
+    0 28px 70px rgba(0, 0, 0, 0.5),
+    0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+.timeline-piece-animation {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 30;
+  pointer-events: none;
+  transform: translate(var(--timeline-from-x), var(--timeline-from-y));
+  animation: timeline-piece-travel var(--timeline-animation-duration) ease-out forwards;
+  filter: drop-shadow(0 8px 12px rgba(0, 0, 0, 0.34));
+}
+
+@keyframes timeline-piece-travel {
+  from {
+    transform: translate(var(--timeline-from-x), var(--timeline-from-y)) scale(1.02);
+  }
+
+  to {
+    transform: translate(var(--timeline-to-x), var(--timeline-to-y)) scale(1);
+  }
+}
+
+.game-panel {
+  width: 320px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  background: rgba(23, 22, 20, 0.78);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.36);
+  backdrop-filter: blur(14px);
+}
+
+.game-details {
+  flex: 0 0 auto;
+  padding: 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.game-details dl {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px 14px;
+  margin: 0;
+}
+
+.game-details div {
+  display: grid;
+  gap: 4px;
+}
+
+.game-details dt {
+  color: rgba(245, 240, 232, 0.56);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.game-details dd {
+  margin: 0;
+  color: #f5f0e8;
+  font-size: 0.84rem;
+  line-height: 1.35;
+}
+
+.new-game-button {
+  width: 100%;
+  min-height: 34px;
+  margin-top: 12px;
+  border: 1px solid rgba(245, 240, 232, 0.18);
+  border-radius: 6px;
+  color: #f5f0e8;
+  background: rgba(255, 255, 255, 0.07);
+  font: inherit;
+  font-size: 0.84rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.new-game-button:hover {
+  background: rgba(255, 255, 255, 0.11);
+}
+
+.move-table-wrap {
+  flex: 0 0 420px;
+  height: 420px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-color: rgba(245, 240, 232, 0.24) rgba(19, 18, 16, 0.78);
+}
+
+.move-table {
+  width: 100%;
+  border-collapse: collapse;
+  color: #eee8dc;
+  font-size: 0.84rem;
+  line-height: 1.2;
+}
+
+.move-table th,
+.move-table td {
+  padding: 3px 8px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.move-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  color: rgba(245, 240, 232, 0.62);
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  background: rgba(19, 18, 16, 0.98);
+}
+
+.move-table th:first-child,
+.move-table td:first-child {
+  width: 34px;
+  color: rgba(245, 240, 232, 0.52);
+  text-align: right;
+}
+
+.move-table tbody tr:nth-child(odd) {
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.move-table tbody tr:hover {
+  background: rgba(255, 255, 255, 0.055);
+}
+
+.move-table .current-move {
+  color: #fff8e8;
+  background: rgba(216, 171, 91, 0.22);
+  box-shadow:
+    inset 0 0 0 1px rgba(216, 171, 91, 0.34),
+    inset 3px 0 0 rgba(233, 190, 109, 0.95);
+}
+
+.move-cell-button {
+  width: 100%;
+  min-height: 21px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  padding: 1px 3px;
+  border: 0;
+  border-radius: 4px;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.move-cell-button:hover {
+  color: #fff8e8;
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.timeline-controls {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  padding: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(19, 18, 16, 0.72);
+}
+
+.timeline-controls button {
+  min-height: 36px;
+  border: 1px solid rgba(245, 240, 232, 0.16);
+  border-radius: 6px;
+  color: #f5f0e8;
+  background: rgba(255, 255, 255, 0.07);
+  font: inherit;
+  font-size: 1.12rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.timeline-controls button:not(:disabled):hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.timeline-controls button:disabled {
+  color: rgba(245, 240, 232, 0.28);
+  cursor: not-allowed;
+}
+
+@media (max-width: 850px) {
+  .game-layout {
+    grid-template-columns: 1fr;
+    justify-items: center;
+    gap: 22px;
+  }
+
+  .board-wrap,
+  .board-column,
+  .game-panel {
+    width: min(94vw, 560px);
+    max-width: 100%;
+  }
+
+  .game-panel {
+    max-height: none;
+  }
+
+  .move-table-wrap {
+    flex-basis: 320px;
+    height: 320px;
+  }
+}
+
+@media (max-width: 640px) {
+  .app-shell {
+    gap: 18px;
+    padding: 20px 12px;
+  }
+
+  .board-wrap {
+    max-width: calc(100svh - 142px);
+  }
+
+  .captured-piece {
+    width: 15px;
+    font-size: 1rem;
+  }
+
+  .game-details {
+    padding: 12px;
+  }
+
+  .game-details dl {
+    grid-template-columns: 1fr;
+  }
+
+  .move-table th,
+  .move-table td {
+    padding: 3px 7px;
+  }
+}
