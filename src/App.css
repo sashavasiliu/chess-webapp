@@ -151,6 +151,7 @@
 .hub-nav a,
 .hub-nav button,
 .game-route-header a,
+.route-link-button,
 .saved-game-actions a {
   min-height: 34px;
   display: inline-flex;
@@ -160,6 +161,12 @@
   color: #f5f0e8;
   text-decoration: none;
   font-weight: 800;
+}
+
+.route-link-button {
+  border: 0;
+  background: transparent;
+  cursor: pointer;
 }
 
 .hub-actions,
@@ -223,6 +230,11 @@
 .mode-card span {
   color: rgba(245, 240, 232, 0.64);
   line-height: 1.35;
+}
+
+.trainer-family-card {
+  color: #f5f0e8;
+  text-decoration: none;
 }
 
 .mode-card-disabled {
@@ -323,6 +335,11 @@
 }
 
 .setup-board-column {
+  width: var(--board-size);
+  display: block;
+}
+
+.trainer-board-column {
   width: var(--board-size);
   display: block;
 }
@@ -712,6 +729,30 @@
   background: rgba(255, 255, 255, 0.055);
 }
 
+.move-table .analysis-line-row {
+  color: rgba(196, 222, 255, 0.9);
+  background: rgba(88, 126, 186, 0.1);
+}
+
+.move-table .analysis-line-row:hover {
+  background: rgba(88, 126, 186, 0.14);
+}
+
+.move-table .analysis-line-row td:first-child {
+  color: rgba(196, 222, 255, 0.68);
+  font-weight: 900;
+}
+
+.analysis-line-text {
+  max-width: 210px;
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: rgba(226, 238, 255, 0.92);
+  font-size: 0.78rem;
+  font-style: italic;
+}
+
 .move-table .current-move {
   color: #fff8e8;
   background: rgba(216, 171, 91, 0.22);
@@ -849,6 +890,135 @@
   background: rgba(52, 168, 83, 0.24);
 }
 
+.trainer-layout {
+  width: min(100%, calc(var(--board-size) + 328px));
+  grid-template-columns: var(--board-size) 300px;
+}
+
+.trainer-family-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.trainer-line-browser {
+  min-height: 0;
+  display: grid;
+  gap: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  background: rgba(23, 22, 20, 0.78);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.32);
+  padding: 14px;
+}
+
+.trainer-line-browser-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.trainer-line-browser h2 {
+  margin: 0;
+}
+
+.trainer-random-button {
+  width: auto;
+  min-width: 170px;
+  margin-top: 0;
+}
+
+.trainer-line-table-wrap {
+  max-height: calc(100svh - 250px);
+  min-height: 280px;
+  overflow: auto;
+  scrollbar-color: rgba(245, 240, 232, 0.24) rgba(19, 18, 16, 0.78);
+}
+
+.trainer-line-table {
+  width: 100%;
+  border-collapse: collapse;
+  color: #eee8dc;
+  font-size: 0.86rem;
+}
+
+.trainer-line-table th,
+.trainer-line-table td {
+  padding: 8px 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.trainer-line-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  color: rgba(245, 240, 232, 0.62);
+  font-size: 0.66rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  background: rgba(19, 18, 16, 0.98);
+}
+
+.trainer-line-table td:first-child {
+  width: 58px;
+  color: rgba(232, 184, 102, 0.92);
+  font-weight: 800;
+}
+
+.trainer-line-table td:nth-child(3) {
+  width: 74px;
+  color: rgba(245, 240, 232, 0.62);
+}
+
+.trainer-line-table td:last-child {
+  width: 104px;
+}
+
+.trainer-line-table button {
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid rgba(245, 240, 232, 0.18);
+  border-radius: 6px;
+  color: #f5f0e8;
+  background: rgba(255, 255, 255, 0.07);
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.trainer-line-table button:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.trainer-panel .game-details dl {
+  grid-template-columns: 1fr;
+}
+
+.trainer-setup {
+  display: grid;
+  gap: 9px;
+  margin-top: 12px;
+}
+
+.trainer-status {
+  font-weight: 800;
+}
+
+.trainer-status-correct {
+  color: #9fd7ad;
+}
+
+.trainer-status-incorrect {
+  color: #ffb4a8;
+}
+
+.trainer-status-complete {
+  color: #e7c06b;
+}
+
 @media (max-width: 850px) {
   .game-layout {
     --eval-width: 42px;
@@ -874,6 +1044,24 @@
   .setup-panel {
     width: calc(var(--board-size) + var(--eval-width) + var(--board-gap));
     max-width: 94vw;
+  }
+
+  .trainer-layout {
+    grid-template-columns: 1fr;
+    width: 100%;
+  }
+
+  .trainer-family-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .trainer-line-browser-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .trainer-random-button {
+    width: 100%;
   }
 
   .board-wrap {

@@ -42,6 +42,19 @@ export type SavedGame = {
   end_reason: GameEndReason;
 };
 
+export type OpeningLine = {
+  id: string;
+  eco: string;
+  name: string;
+  pgn: string;
+  family: string;
+  source: string;
+  source_file: string;
+  move_count: number;
+  created_at: string;
+  updated_at: string;
+};
+
 export type Preferences = {
   user_id: string;
   sound_enabled: boolean;

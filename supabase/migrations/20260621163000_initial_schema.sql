@@ -46,30 +46,6 @@ create table if not exists public.games (
   )
 );
 
-create table if not exists public.opening_lines (
-  id uuid primary key default gen_random_uuid(),
-  eco text not null,
-  name text not null,
-  pgn text not null,
-  family text not null,
-  source text not null default 'lichess/chess-openings',
-  source_file text not null,
-  move_count integer not null default 0,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  constraint opening_lines_source_unique unique (source_file, eco, name, pgn),
-  constraint opening_lines_move_count_check check (move_count >= 0)
-);
-
-create index if not exists opening_lines_eco_idx
-  on public.opening_lines (eco);
-
-create index if not exists opening_lines_family_idx
-  on public.opening_lines (family);
-
-create index if not exists opening_lines_name_idx
-  on public.opening_lines (name);
-
 alter table public.games
   add column if not exists player_color text not null default 'w',
   add column if not exists time_control_label text not null default 'Infinite',
@@ -110,52 +86,56 @@ end $$;
 alter table public.profiles enable row level security;
 alter table public.preferences enable row level security;
 alter table public.games enable row level security;
-alter table public.opening_lines enable row level security;
 
+drop policy if exists "Users can read own profile" on public.profiles;
 create policy "Users can read own profile"
   on public.profiles for select
   using (auth.uid() = id);
 
+drop policy if exists "Users can insert own profile" on public.profiles;
 create policy "Users can insert own profile"
   on public.profiles for insert
   with check (auth.uid() = id);
 
+drop policy if exists "Users can update own profile" on public.profiles;
 create policy "Users can update own profile"
   on public.profiles for update
   using (auth.uid() = id)
   with check (auth.uid() = id);
 
+drop policy if exists "Users can read own preferences" on public.preferences;
 create policy "Users can read own preferences"
   on public.preferences for select
   using (auth.uid() = user_id);
 
+drop policy if exists "Users can insert own preferences" on public.preferences;
 create policy "Users can insert own preferences"
   on public.preferences for insert
   with check (auth.uid() = user_id);
 
+drop policy if exists "Users can update own preferences" on public.preferences;
 create policy "Users can update own preferences"
   on public.preferences for update
   using (auth.uid() = user_id)
   with check (auth.uid() = user_id);
 
+drop policy if exists "Users can read own games" on public.games;
 create policy "Users can read own games"
   on public.games for select
   using (auth.uid() = user_id);
 
+drop policy if exists "Users can insert own games" on public.games;
 create policy "Users can insert own games"
   on public.games for insert
   with check (auth.uid() = user_id);
 
+drop policy if exists "Users can update own games" on public.games;
 create policy "Users can update own games"
   on public.games for update
   using (auth.uid() = user_id)
   with check (auth.uid() = user_id);
 
+drop policy if exists "Users can delete own games" on public.games;
 create policy "Users can delete own games"
   on public.games for delete
   using (auth.uid() = user_id);
-
-drop policy if exists "Anyone can read opening lines" on public.opening_lines;
-create policy "Anyone can read opening lines"
-  on public.opening_lines for select
-  using (true);

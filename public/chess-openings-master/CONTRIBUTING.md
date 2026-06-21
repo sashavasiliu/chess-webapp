@@ -1,0 +1,16 @@
+Contributing
+============
+
+Opening data is in `a.tsv`, `b.tsv`, `c.tsv`, `d.tsv`, and `e.tsv`, with the filenames corresponding to [ECO volumes](https://en.wikipedia.org/wiki/Encyclopaedia_of_Chess_Openings#Openings_covered).
+
+Improvements, additions and fixes are welcome. If you have concrete
+suggestions, please be bold and submit the proposed changes directly as pull
+requests!
+
+Please keep each PR to a single logical change (e.g. one opening per PR) so it can be accepted or rejected as a whole.
+
+The changes will be live on lichess.org after the next update of
+[scalachess](https://github.com/lichess-org/scalachess) (no fixed schedule)
+and the
+[opening explorer](https://github.com/lichess-org/lila-openingexplorer)
+(daily).

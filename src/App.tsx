@@ -1,5 +1,6 @@
 import {
   createContext,
+  Fragment,
   useContext,
   useEffect,
   useMemo,
@@ -22,8 +23,8 @@ import type { Session, User } from "@supabase/supabase-js";
 import { Chess, type Move, type PieceSymbol, type Square } from "chess.js";
 import {
   Chessboard,
+  defaultArrowOptions,
   defaultPieces,
-  getRelativeCoords,
   type Arrow,
   type PieceRenderObject,
 } from "react-chessboard";
@@ -32,6 +33,13 @@ import {
   unlockAudio,
 } from "./soundManager";
 import { StockfishEngine } from "./stockfishEngine";
+import {
+  buildOpeningTreeFromLine,
+  getUciForMove,
+  type OpeningTrainerChild,
+  type OpeningTrainerNode,
+  type OpeningTrainerTree,
+} from "./openingTrainer";
 import { EvaluationBar } from "./components/EvaluationBar";
 import { useEvaluation } from "./hooks/useEvaluation";
 import {
@@ -39,6 +47,7 @@ import {
   supabase,
   type GameEndReason,
   type GameResult,
+  type OpeningLine,
   type PlayerColor,
   type SavedGame,
 } from "./lib/supabase";
@@ -220,6 +229,12 @@ const CAPTURE_MOVE_STYLE: CSSProperties = {
   boxShadow: "inset 0 0 0 5px rgba(190, 70, 55, 0.68), inset 0 0 18px rgba(190, 70, 55, 0.35)",
 };
 
+const TRAINER_HINT_SOURCE_STYLE: CSSProperties = {
+  boxShadow:
+    "inset 0 0 0 4px rgba(91, 184, 142, 0.95), inset 0 0 18px rgba(91, 184, 142, 0.58)",
+};
+
+
 const HIDDEN_DRAG_SOURCE_PIECE_STYLE: CSSProperties = {
   opacity: 1,
   visibility: "hidden",
@@ -230,14 +245,66 @@ const VISIBLE_DRAG_SOURCE_PIECE_STYLE: CSSProperties = {
   visibility: "visible",
 };
 
+const BOARD_ARROW_OPTIONS = {
+  ...defaultArrowOptions,
+  arrowStartOffset: 0.34,
+};
+
+const MAX_ANALYSIS_LINE_TOKENS = 8;
+
+type AnalysisLineDisplay = {
+  anchorMoveNumber: number;
+  text: string;
+};
+
+function getSquareCenter(
+  square: string,
+  squareSize: number,
+  orientation: "white" | "black",
+): { x: number; y: number } {
+  const fileIndex = square.charCodeAt(0) - 97; // 'a'=0 … 'h'=7
+  const rankIndex = parseInt(square[1], 10) - 1; // '1'=0 … '8'=7
+  const col = orientation === "white" ? fileIndex : 7 - fileIndex;
+  const row = orientation === "white" ? 7 - rankIndex : rankIndex;
+  return { x: (col + 0.5) * squareSize, y: (row + 0.5) * squareSize };
+}
+
+function buildAnalysisLineDisplay(sandbox: AnalysisSandbox | null): AnalysisLineDisplay | null {
+  if (!sandbox || sandbox.moves.length === 0) return null;
+
+  const visibleMoves = sandbox.moves.slice(0, MAX_ANALYSIS_LINE_TOKENS);
+  const tokens = visibleMoves.map((move, index) => {
+    const ply = sandbox.basePly + index + 1;
+    const moveNumber = getMoveNumberForPly(ply);
+    const isWhiteMove = ply % 2 === 1;
+
+    if (isWhiteMove) {
+      return `${moveNumber}. ${move.san}`;
+    }
+
+    return index === 0 ? `${moveNumber}... ${move.san}` : move.san;
+  });
+
+  if (sandbox.moves.length > visibleMoves.length) {
+    tokens.push("...");
+  }
+
+  return {
+    anchorMoveNumber: sandbox.basePly === 0 ? 0 : getMoveNumberForPly(sandbox.basePly),
+    text: tokens.join(" "),
+  };
+}
+
 function MoveTable({
   rows,
   currentPlyIndex,
   onSelectMove,
+  analysisLine,
 }: {
   rows: MoveRow[];
   currentPlyIndex: number;
   onSelectMove: (entry: TimelineEntry) => void;
+  analysisLine: AnalysisLineDisplay | null;
 }) {
   function getMoveCellClass(entry?: TimelineEntry) {
     return entry?.ply === currentPlyIndex ? "current-move" : undefined;
@@ -257,6 +324,19 @@ function MoveTable({
     );
   }
 
+  function renderAnalysisLine(key: string) {
+    if (!analysisLine) return null;
+
+    return (
+      <tr className="analysis-line-row" key={key}>
+        <td aria-hidden="true">&gt;</td>
+        <td colSpan={2}>
+          <span className="analysis-line-text">{analysisLine.text}</span>
+        </td>
+      </tr>
+    );
+  }
+
   return (
     <div className="move-table-wrap">
       <table className="move-table">
@@ -268,16 +348,24 @@ function MoveTable({
           </tr>
         </thead>
         <tbody>
+          {analysisLine?.anchorMoveNumber === 0
+            ? renderAnalysisLine("analysis-line-start")
+            : null}
           {rows.map((row) => (
-            <tr key={row.moveNumber}>
-              <td>{row.moveNumber}.</td>
-              <td className={getMoveCellClass(row.white)}>
-                {renderMoveButton(row.white)}
-              </td>
-              <td className={getMoveCellClass(row.black)}>
-                {renderMoveButton(row.black)}
-              </td>
-            </tr>
+            <Fragment key={row.moveNumber}>
+              <tr>
+                <td>{row.moveNumber}.</td>
+                <td className={getMoveCellClass(row.white)}>
+                  {renderMoveButton(row.white)}
+                </td>
+                <td className={getMoveCellClass(row.black)}>
+                  {renderMoveButton(row.black)}
+                </td>
+              </tr>
+              {analysisLine?.anchorMoveNumber === row.moveNumber
+                ? renderAnalysisLine(`analysis-line-${row.moveNumber}`)
+                : null}
+            </Fragment>
           ))}
         </tbody>
       </table>
@@ -294,6 +382,7 @@ function GameInfoPanel({
   isGameCompleted,
   canResign,
   moveRows,
+  analysisLine,
   currentPlyIndex,
   latestPly,
   onSelectMove,
@@ -320,6 +409,7 @@ function GameInfoPanel({
   isGameCompleted: boolean;
   canResign: boolean;
   moveRows: MoveRow[];
+  analysisLine: AnalysisLineDisplay | null;
   currentPlyIndex: number;
   latestPly: number;
   onSelectMove: (entry: TimelineEntry) => void;
@@ -343,6 +433,7 @@ function GameInfoPanel({
     isThinking,
     isReplyPending,
   );
+  const canGoPrevious = currentPlyIndex > 0 || analysisMoveCount > 0;
 
   return (
     <aside className="game-panel" aria-label="Game information">
@@ -424,6 +515,7 @@ function GameInfoPanel({
         rows={moveRows}
         currentPlyIndex={currentPlyIndex}
         onSelectMove={onSelectMove}
+        analysisLine={analysisLine}
       />
 
       <div className="timeline-controls" aria-label="Timeline navigation">
@@ -439,7 +531,7 @@ function GameInfoPanel({
         <button
           type="button"
           onClick={onPreviousPly}
-          disabled={currentPlyIndex === 0}
+          disabled={!canGoPrevious}
           aria-label="Previous position"
           title="Previous position"
         >
@@ -735,10 +827,14 @@ function HubScreen() {
           <strong>Game History</strong>
           <span>Resume or review your saved games with the client-side Eval Bar.</span>
         </button>
-        <div className="mode-card mode-card-disabled">
+        <button
+          className="mode-card"
+          type="button"
+          onClick={() => navigate("/trainer")}
+        >
           <strong>Opening Trainer</strong>
-          <span>Coming soon: scripted opening lines and repertoire practice.</span>
-        </div>
+          <span>Choose opening lines for repertoire practice.</span>
+        </button>
         <div className="mode-card mode-card-disabled">
           <strong>Practice Library</strong>
           <span>Coming soon: saved studies, drills, and progress tracking.</span>
@@ -1045,6 +1141,668 @@ function NewGameRoute() {
           >
             {isCreating ? "Starting" : "Start Game"}
           </button>
+        </aside>
+      </div>
+    </main>
+  );
+}
+
+type TrainerFeedback = "idle" | "correct" | "incorrect" | "complete";
+
+const SPANISH_GAME_FAMILY = "spanish-game";
+
+function TrainerLandingRoute() {
+  return (
+    <main className="hub-shell">
+      <header className="hub-header">
+        <div>
+          <p className="eyebrow">Opening trainer</p>
+          <h1>Choose an Opening</h1>
+        </div>
+        <nav className="hub-nav" aria-label="Trainer navigation">
+          <Link to="/">Hub</Link>
+          <Link to="/play/new">Play</Link>
+        </nav>
+      </header>
+
+      <section className="mode-grid trainer-family-grid" aria-label="Opening families">
+        <Link className="mode-card trainer-family-card" to="/trainer/spanish-game">
+          <strong>Spanish Game / Ruy Lopez</strong>
+          <span>Practice imported Ruy Lopez lines from the opening database.</span>
+        </Link>
+      </section>
+    </main>
+  );
+}
+
+function SpanishGameTrainerRoute() {
+  const [lines, setLines] = useState<OpeningLine[]>([]);
+  const [selectedLine, setSelectedLine] = useState<OpeningLine | null>(null);
+  const [tree, setTree] = useState<OpeningTrainerTree | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [isLoadingLines, setIsLoadingLines] = useState(true);
+  const [trainerSide, setTrainerSide] = useState<PlayerColor>("w");
+  const [hasStarted, setHasStarted] = useState(false);
+  const [game, setGame] = useState(() => new Chess());
+  const [currentNode, setCurrentNode] = useState<OpeningTrainerNode | null>(null);
+  const [timeline, setTimeline] = useState<TimelineEntry[]>(() => createInitialTimeline());
+  const [feedback, setFeedback] = useState<TrainerFeedback>("idle");
+  const [failedAttempts, setFailedAttempts] = useState(0);
+  const [activeSquare, setActiveSquare] = useState<Square | null>(null);
+  const [activeSource, setActiveSource] = useState<ActiveSource | null>(null);
+  const [hoveredSquare, setHoveredSquare] = useState<Square | null>(null);
+  const [draggedSquare, setDraggedSquare] = useState<Square | null>(null);
+  const [legalMoves, setLegalMoves] = useState<Move[]>([]);
+  const isTrainerDraggingRef = useRef(false);
+  const trainerDraggedSquareRef = useRef<Square | null>(null);
+
+  const trainerNode = currentNode ?? tree?.root ?? null;
+  const currentPlyIndex = timeline.length - 1;
+  const moveRows = buildMoveRows(timeline);
+  const isLineComplete = hasStarted && trainerNode !== null && trainerNode.children.length === 0;
+  const isUserTurn =
+    hasStarted &&
+    trainerNode !== null &&
+    trainerNode.children.length > 0 &&
+    game.turn() === trainerSide;
+  const currentOpening = trainerNode?.openings[0] ?? tree?.root.openings[0] ?? selectedLine ?? null;
+  const boardOrientation = trainerSide === "w" ? "white" : "black";
+  const trainerBoardKey = `trainer-${hasStarted ? "started" : "setup"}-${trainerSide}`;
+  const firstHintMove = trainerNode?.children[0] ?? null;
+  const trainerHintArrows: Arrow[] =
+    failedAttempts >= 2 && firstHintMove
+      ? [
+          {
+            startSquare: firstHintMove.from,
+            endSquare: firstHintMove.to,
+            color: "rgba(52, 168, 83, 0.78)",
+          },
+        ]
+      : [];
+
+  useEffect(() => {
+    let isActive = true;
+
+    void requireSupabase()
+      .from("opening_lines")
+      .select("id,eco,name,pgn,family,source,source_file,move_count,created_at,updated_at")
+      .eq("family", SPANISH_GAME_FAMILY)
+      .order("eco", { ascending: true })
+      .order("name", { ascending: true })
+      .order("move_count", { ascending: true })
+      .then(({ data, error }) => {
+        if (!isActive) return;
+
+        if (error) {
+          setLoadError(error.message);
+          setLines([]);
+        } else {
+          setLines((data ?? []) as OpeningLine[]);
+        }
+
+        setIsLoadingLines(false);
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!draggedSquare) return;
+
+    function clearCanceledTrainerDrag(event: KeyboardEvent | PointerEvent | MouseEvent) {
+      if ("key" in event && event.key !== "Escape") return;
+      setActiveSquare(null);
+      setActiveSource(null);
+      setHoveredSquare(null);
+      isTrainerDraggingRef.current = false;
+      trainerDraggedSquareRef.current = null;
+      setDraggedSquare(null);
+      setLegalMoves([]);
+    }
+
+    window.addEventListener("keydown", clearCanceledTrainerDrag);
+    window.addEventListener("pointercancel", clearCanceledTrainerDrag);
+    window.addEventListener("contextmenu", clearCanceledTrainerDrag);
+
+    return () => {
+      window.removeEventListener("keydown", clearCanceledTrainerDrag);
+      window.removeEventListener("pointercancel", clearCanceledTrainerDrag);
+      window.removeEventListener("contextmenu", clearCanceledTrainerDrag);
+    };
+  }, [draggedSquare]);
+
+  function startTrainer() {
+    if (!tree) return;
+
+    unlockAudio();
+
+    let nextGame = new Chess();
+    let nextNode = tree.root;
+    let nextTimeline = createInitialTimeline();
+    let nextFeedback: TrainerFeedback = "idle";
+
+    if (trainerSide === "b" && nextNode.children.length > 0) {
+      const appliedReply = applyTrainerChild(nextGame, nextNode.children[0], nextTimeline);
+      if (appliedReply) {
+        nextGame = appliedReply.game;
+        nextNode = appliedReply.node;
+        nextTimeline = appliedReply.timeline;
+        nextFeedback = nextNode.children.length === 0 ? "complete" : "idle";
+        playChessSound(getSoundForMove(nextGame, appliedReply.move));
+      }
+    }
+
+    setHasStarted(true);
+    setGame(nextGame);
+    setCurrentNode(nextNode);
+    setTimeline(nextTimeline);
+    setFeedback(nextFeedback);
+    setFailedAttempts(0);
+    clearTrainerInteractionState();
+  }
+
+  function resetTrainer() {
+    setHasStarted(false);
+    setGame(new Chess());
+    setCurrentNode(tree?.root ?? null);
+    setTimeline(createInitialTimeline());
+    setFeedback("idle");
+    setFailedAttempts(0);
+    clearTrainerInteractionState();
+  }
+
+  function chooseLine(line: OpeningLine) {
+    const nextTree = buildOpeningTreeFromLine(line);
+
+    setSelectedLine(line);
+    setTree(nextTree);
+    setCurrentNode(nextTree.root);
+    setHasStarted(false);
+    setGame(new Chess());
+    setTimeline(createInitialTimeline());
+    setFeedback("idle");
+    setFailedAttempts(0);
+    clearTrainerInteractionState();
+  }
+
+  function chooseRandomLine() {
+    if (lines.length === 0) return;
+
+    const randomIndex = Math.floor(Math.random() * lines.length);
+    chooseLine(lines[randomIndex]);
+  }
+
+  function returnToLineList() {
+    setSelectedLine(null);
+    setTree(null);
+    setCurrentNode(null);
+    setHasStarted(false);
+    setGame(new Chess());
+    setTimeline(createInitialTimeline());
+    setFeedback("idle");
+    setFailedAttempts(0);
+    clearTrainerInteractionState();
+  }
+
+  function applyTrainerChild(
+    sourceGame: Chess,
+    child: OpeningTrainerChild,
+    sourceTimeline: TimelineEntry[],
+  ) {
+    const gameCopy = cloneGameWithHistory(sourceGame);
+    const move = gameCopy.move({
+      from: child.from,
+      to: child.to,
+      promotion: child.promotion ?? "q",
+    });
+
+    if (!move) return null;
+
+    const nextPly = sourceTimeline.length;
+    const entry: TimelineEntry = {
+      ply: nextPly,
+      fen: gameCopy.fen(),
+      san: move.san,
+      uci: getUciForMove(move),
+      from: move.from,
+      to: move.to,
+      promotion: move.promotion,
+      moveNumber: getMoveNumberForPly(nextPly),
+      color: move.color,
+      captured: move.captured,
+    };
+
+    return {
+      game: gameCopy,
+      node: child.node,
+      timeline: [...sourceTimeline, entry],
+      move,
+    };
+  }
+
+  function attemptTrainerMove(sourceSquare: Square, targetSquare: Square) {
+    if (!isUserTurn || !trainerNode) return false;
+
+    const previewGame = cloneGameWithHistory(game);
+    const legalMove = previewGame.move({
+      from: sourceSquare,
+      to: targetSquare,
+      promotion: "q",
+    });
+
+    if (!legalMove) {
+      clearTrainerInteractionState();
+      return false;
+    }
+
+    const selectedChild = trainerNode.children.find(
+      (child) => child.uci === getUciForMove(legalMove),
+    );
+
+    if (!selectedChild) {
+      setFeedback("incorrect");
+      setFailedAttempts((attempts) => Math.min(attempts + 1, 2));
+      clearTrainerInteractionState();
+      return false;
+    }
+
+    const appliedMove = applyTrainerChild(game, selectedChild, timeline);
+    if (!appliedMove) return false;
+
+    unlockAudio();
+
+    let nextGame = appliedMove.game;
+    let nextNode = appliedMove.node;
+    let nextTimeline = appliedMove.timeline;
+    let moveForSound = appliedMove.move;
+    let nextFeedback: TrainerFeedback = nextNode.children.length === 0 ? "complete" : "correct";
+
+    if (nextNode.children.length > 0 && nextGame.turn() !== trainerSide) {
+      const appliedReply = applyTrainerChild(nextGame, nextNode.children[0], nextTimeline);
+
+      if (appliedReply) {
+        nextGame = appliedReply.game;
+        nextNode = appliedReply.node;
+        nextTimeline = appliedReply.timeline;
+        moveForSound = appliedReply.move;
+        nextFeedback = nextNode.children.length === 0 ? "complete" : "correct";
+      }
+    }
+
+    setGame(nextGame);
+    setCurrentNode(nextNode);
+    setTimeline(nextTimeline);
+    setFeedback(nextFeedback);
+    setFailedAttempts(0);
+    clearTrainerInteractionState();
+    playChessSound(getSoundForMove(nextGame, moveForSound));
+    return true;
+  }
+
+  function getTrainerMovesForSquare(square: Square) {
+    if (!isUserTurn) return [];
+
+    return game.moves({ square, verbose: true });
+  }
+
+  function isSelectableTrainerPiece(square: Square) {
+    return isUserTurn && game.get(square)?.color === trainerSide;
+  }
+
+  function activateTrainerSquare(square: Square, source: ActiveSource) {
+    if (!isSelectableTrainerPiece(square)) {
+      clearTrainerInteractionState();
+      return false;
+    }
+
+    setActiveSquare(square);
+    setActiveSource(source);
+    setHoveredSquare(null);
+    setLegalMoves(getTrainerMovesForSquare(square));
+    return true;
+  }
+
+  function clearTrainerInteractionState() {
+    setActiveSquare(null);
+    setActiveSource(null);
+    setHoveredSquare(null);
+    endTrainerDrag();
+    setLegalMoves([]);
+  }
+
+  function beginTrainerDrag(square: Square) {
+    isTrainerDraggingRef.current = true;
+    trainerDraggedSquareRef.current = square;
+    setDraggedSquare(square);
+  }
+
+  function endTrainerDrag() {
+    isTrainerDraggingRef.current = false;
+    trainerDraggedSquareRef.current = null;
+    setDraggedSquare(null);
+  }
+
+  function handleTrainerSquareClick(square: Square) {
+    unlockAudio();
+
+    if (!hasStarted) return;
+
+    if (square === activeSquare) {
+      clearTrainerInteractionState();
+      return;
+    }
+
+    if (activeSquare) {
+      if (isSelectableTrainerPiece(square)) {
+        activateTrainerSquare(square, "click");
+        return;
+      }
+
+      attemptTrainerMove(activeSquare, square);
+      return;
+    }
+
+    if (isSelectableTrainerPiece(square)) {
+      activateTrainerSquare(square, "click");
+      return;
+    }
+
+    clearTrainerInteractionState();
+  }
+
+  function handleTrainerPieceClick(square: string | null) {
+    if (isSquare(square) && isSelectableTrainerPiece(square)) {
+      activateTrainerSquare(square, "click");
+    }
+  }
+
+  function handleTrainerPieceDrag(square: string | null) {
+    unlockAudio();
+
+    if (!isSquare(square)) {
+      return;
+    }
+
+    if (!isSelectableTrainerPiece(square)) {
+      return;
+    }
+
+    beginTrainerDrag(square);
+    activateTrainerSquare(square, "drag");
+  }
+
+  function handleTrainerPieceDrop(sourceSquare: string, targetSquare: string | null) {
+    try {
+      if (!isSquare(sourceSquare) || !isSquare(targetSquare) || sourceSquare === targetSquare) {
+        clearTrainerInteractionState();
+        return false;
+      }
+
+      const didMove = attemptTrainerMove(sourceSquare, targetSquare);
+      clearTrainerInteractionState();
+      return didMove;
+    } finally {
+      endTrainerDrag();
+    }
+  }
+
+  function handleTrainerMouseOverSquare(square: Square) {
+    if (!activeSquare && !draggedSquare && isSelectableTrainerPiece(square)) {
+      setHoveredSquare(square);
+    }
+  }
+
+  function buildTrainerSquareStyles(): Record<string, CSSProperties> {
+    const squareStyles: Record<string, CSSProperties> = {};
+
+    if (failedAttempts >= 1 && trainerNode) {
+      const hintSources = new Set(trainerNode.children.map((child) => child.from));
+
+      hintSources.forEach((sourceSquare) => {
+        squareStyles[sourceSquare] = {
+          ...squareStyles[sourceSquare],
+          ...TRAINER_HINT_SOURCE_STYLE,
+        };
+      });
+    }
+
+    if (hoveredSquare && hoveredSquare !== activeSquare) {
+      squareStyles[hoveredSquare] = HOVERED_SQUARE_STYLE;
+    }
+
+    if (activeSquare && activeSource) {
+      squareStyles[activeSquare] = SELECTED_SQUARE_STYLE;
+    }
+
+    legalMoves.forEach((move) => {
+      squareStyles[move.to] = {
+        ...squareStyles[move.to],
+        ...(move.isCapture() ? CAPTURE_MOVE_STYLE : QUIET_MOVE_STYLE),
+      };
+    });
+
+    return squareStyles;
+  }
+
+  function getFeedbackLabel() {
+    if (!hasStarted) return "Ready";
+    if (isLineComplete || feedback === "complete") return "Line complete";
+    if (feedback === "incorrect" && failedAttempts >= 2 && firstHintMove) {
+      return `Correct move: ${firstHintMove.san}`;
+    }
+    if (feedback === "incorrect") return "Not in repertoire";
+    if (feedback === "correct") return "Correct";
+    return isUserTurn ? "Your move" : "Trainer move";
+  }
+
+  if (!selectedLine) {
+    return (
+      <main className="hub-shell">
+        <header className="hub-header">
+          <div>
+            <p className="eyebrow">Opening trainer</p>
+            <h1>Spanish Game / Ruy Lopez</h1>
+          </div>
+          <nav className="hub-nav" aria-label="Spanish trainer navigation">
+            <Link to="/trainer">Openings</Link>
+            <Link to="/">Hub</Link>
+          </nav>
+        </header>
+
+        {loadError ? <p className="hub-error">{loadError}</p> : null}
+
+        <section className="trainer-line-browser" aria-label="Spanish Game lines">
+          <div className="trainer-line-browser-header">
+            <div>
+              <h2>Lines</h2>
+              <p className="muted-copy">
+                {isLoadingLines
+                  ? "Loading imported opening lines"
+                  : `${lines.length} imported lines available`}
+              </p>
+            </div>
+            <button
+              className="start-game-button trainer-random-button"
+              type="button"
+              disabled={isLoadingLines || lines.length === 0}
+              onClick={chooseRandomLine}
+            >
+              Play Random Line
+            </button>
+          </div>
+
+          {!isLoadingLines && lines.length === 0 && !loadError ? (
+            <p className="muted-copy">
+              No Spanish Game lines were found in Supabase. Import openings first, then refresh this page.
+            </p>
+          ) : null}
+
+          <div className="trainer-line-table-wrap">
+            <table className="trainer-line-table">
+              <thead>
+                <tr>
+                  <th scope="col">ECO</th>
+                  <th scope="col">Line</th>
+                  <th scope="col">Moves</th>
+                  <th scope="col">Practice</th>
+                </tr>
+              </thead>
+              <tbody>
+                {lines.map((line) => (
+                  <tr key={line.id}>
+                    <td>{line.eco}</td>
+                    <td>{line.name}</td>
+                    <td>{line.move_count}</td>
+                    <td>
+                      <button type="button" onClick={() => chooseLine(line)}>
+                        Practice
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </main>
+    );
+  }
+
+  return (
+    <main className="app-shell">
+      <header className="game-route-header">
+        <button className="route-link-button" type="button" onClick={returnToLineList}>
+          Lines
+        </button>
+        <div>
+          <h1>Opening Trainer</h1>
+          <p>{selectedLine.eco} · {selectedLine.name}</p>
+        </div>
+        <Link to="/trainer">Openings</Link>
+      </header>
+
+      <div className="game-layout game-layout-no-eval trainer-layout">
+        <div className="board-column trainer-board-column">
+          <div className="board-with-evaluation board-without-evaluation">
+            <div className="board-wrap">
+              <Chessboard
+                key={trainerBoardKey}
+                options={{
+                  position: game.fen(),
+                  pieces: defaultPieces,
+                  boardOrientation,
+                  squareStyles: buildTrainerSquareStyles(),
+                  allowDragging: isUserTurn,
+                  canDragPiece: ({ piece, square }) =>
+                    isSquare(square) &&
+                    piece.pieceType.startsWith(trainerSide) &&
+                    isSelectableTrainerPiece(square),
+                  draggingPieceGhostStyle: draggedSquare && isTrainerDraggingRef.current
+                    ? HIDDEN_DRAG_SOURCE_PIECE_STYLE
+                    : VISIBLE_DRAG_SOURCE_PIECE_STYLE,
+                  arrows: trainerHintArrows,
+                  showAnimations: true,
+                  animationDurationInMs: TIMELINE_MOVE_ANIMATION_MS,
+                  allowDrawingArrows: true,
+                  arrowOptions: BOARD_ARROW_OPTIONS,
+                  onPieceClick: ({ square }) => handleTrainerPieceClick(square),
+                  onPieceDrag: ({ square }) => handleTrainerPieceDrag(square),
+                  onPieceDrop: ({ sourceSquare, targetSquare }) =>
+                    handleTrainerPieceDrop(sourceSquare, targetSquare),
+                  onSquareClick: ({ square }) => {
+                    if (isSquare(square)) {
+                      handleTrainerSquareClick(square);
+                    }
+                  },
+                  onMouseOverSquare: ({ square }) => {
+                    if (isSquare(square)) {
+                      handleTrainerMouseOverSquare(square);
+                    }
+                  },
+                  onMouseOutSquare: () => setHoveredSquare(null),
+                }}
+              />
+            </div>
+          </div>
+        </div>
+
+        <aside className="game-panel trainer-panel" aria-label="Opening trainer">
+          <section className="game-details" aria-label="Trainer details">
+            <dl>
+              <div>
+                <dt>Opening</dt>
+                <dd>Spanish Game</dd>
+              </div>
+              <div>
+                <dt>Side</dt>
+                <dd>{trainerSide === "w" ? "White" : "Black"}</dd>
+              </div>
+              <div>
+                <dt>Line</dt>
+                <dd>{currentOpening ? `${currentOpening.eco} ${currentOpening.name}` : "Loading"}</dd>
+              </div>
+              <div>
+                <dt>Status</dt>
+                <dd className={`trainer-status trainer-status-${feedback}`}>{getFeedbackLabel()}</dd>
+              </div>
+              <div>
+                <dt>Position</dt>
+                <dd>Ply {currentPlyIndex}</dd>
+              </div>
+              <div>
+                <dt>Lines</dt>
+                <dd>{tree ? tree.lineCount : "-"}</dd>
+              </div>
+            </dl>
+
+            {loadError ? (
+              <p className="engine-alert" role="alert">
+                {loadError}
+              </p>
+            ) : null}
+
+            {!hasStarted ? (
+              <div className="trainer-setup">
+                <div className="segmented-control" role="group" aria-label="Choose trainer side">
+                  <button
+                    className={trainerSide === "w" ? "selected" : undefined}
+                    type="button"
+                    onClick={() => setTrainerSide("w")}
+                  >
+                    White
+                  </button>
+                  <button
+                    className={trainerSide === "b" ? "selected" : undefined}
+                    type="button"
+                    onClick={() => setTrainerSide("b")}
+                  >
+                    Black
+                  </button>
+                </div>
+                <button
+                  className="start-game-button"
+                  type="button"
+                  disabled={!tree || Boolean(loadError)}
+                  onClick={startTrainer}
+                >
+                  {tree ? "Start Trainer" : "Loading"}
+                </button>
+              </div>
+            ) : (
+              <button className="new-game-button" type="button" onClick={resetTrainer}>
+                Reset Trainer
+              </button>
+            )}
+          </section>
+
+          <MoveTable
+            rows={moveRows}
+            currentPlyIndex={currentPlyIndex}
+            onSelectMove={() => undefined}
+            analysisLine={null}
+          />
         </aside>
       </div>
     </main>
@@ -1594,6 +2352,22 @@ function ChessGameScreen({
   function resetAnalysis() {
     setAnalysisSandbox(null);
     clearInteractionState();
+  }
+
+  function goToPreviousAnalysisMove() {
+    if (!analysisSandbox || analysisSandbox.moves.length === 0) return false;
+
+    const nextMoves = analysisSandbox.moves.slice(0, -1);
+    const nextFen = nextMoves.at(-1)?.fen ?? analysisSandbox.baseFen;
+
+    setAnalysisSandbox({
+      ...analysisSandbox,
+      currentFen: nextFen,
+      moves: nextMoves,
+    });
+    clearTimelineAnimation();
+    clearInteractionState();
+    return true;
   }
 
   function setCurrentSavedGameStatus(nextStatus: "active" | "completed") {
@@ -2240,6 +3014,10 @@ function ChessGameScreen({
   }
 
   function goToPreviousPly() {
+    if (goToPreviousAnalysisMove()) {
+      return;
+    }
+
     goToPly(currentPlyIndexRef.current - 1);
   }
 
@@ -2300,6 +3078,7 @@ function ChessGameScreen({
   }
 
   const moveRows = buildMoveRows(timeline);
+  const analysisLine = buildAnalysisLineDisplay(analysisSandbox);
   const capturedPieces = getCapturedPiecesFromTimeline(timeline, currentPlyIndex);
   const materialAdvantage = getMaterialAdvantage(capturedPieces);
   const whiteMaterialAdvantage = materialAdvantage > 0 ? materialAdvantage : undefined;
@@ -2314,9 +3093,18 @@ function ChessGameScreen({
     boardWidth,
     boardOrientation,
   );
+
   const bestMoveArrow: Arrow[] =
-    showEvaluationBar && evaluation?.bestMove && evaluation.fen === displayedFen
-      ? [{ startSquare: evaluation.bestMove.from, endSquare: evaluation.bestMove.to, color: "rgba(52, 168, 83, 0.72)" }]
+    showEvaluationBar &&
+    evaluation?.bestMove != null &&
+    evaluation.fen === displayedFen
+      ? [
+          {
+            startSquare: evaluation.bestMove.from,
+            endSquare: evaluation.bestMove.to,
+            color: "rgba(52, 168, 83, 0.72)",
+          },
+        ]
       : [];
 
   if (!isGameLoaded) {
@@ -2393,7 +3181,8 @@ function ChessGameScreen({
                     ? HIDDEN_DRAG_SOURCE_PIECE_STYLE
                     : VISIBLE_DRAG_SOURCE_PIECE_STYLE,
                   arrows: bestMoveArrow,
-                  allowDrawingArrows: false,
+                  arrowOptions: BOARD_ARROW_OPTIONS,
+                  allowDrawingArrows: true,
                   onPieceDrag: ({ square }) => handlePieceDrag(square),
                   onPieceDrop: ({ sourceSquare, targetSquare }) =>
                     handlePieceDrop(sourceSquare, targetSquare),
@@ -2440,6 +3229,7 @@ function ChessGameScreen({
           isGameCompleted={savedGameStatus === "completed"}
           canResign={mode === "play" && savedGameStatus === "active"}
           moveRows={moveRows}
+          analysisLine={analysisLine}
           currentPlyIndex={currentPlyIndex}
           latestPly={latestPly}
           onSelectMove={selectTimelineMove}
@@ -2502,6 +3292,22 @@ export default function App() {
             }
           />
           <Route
+            path="/trainer"
+            element={
+              <ProtectedRoute>
+                <TrainerLandingRoute />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/trainer/spanish-game"
+            element={
+              <ProtectedRoute>
+                <SpanishGameTrainerRoute />
+              </ProtectedRoute>
+            }
+          />
+          <Route
             path="/review/:gameId"
             element={
               <ProtectedRoute>
@@ -2532,8 +3338,8 @@ function getTimelineAnimationStyle(
   if (!animation || boardWidth <= 0) return undefined;
 
   const squareSize = boardWidth / 8;
-  const from = getRelativeCoords(boardOrientation, boardWidth, 8, 8, animation.from);
-  const to = getRelativeCoords(boardOrientation, boardWidth, 8, 8, animation.to);
+  const from = getSquareCenter(animation.from, squareSize, boardOrientation);
+  const to = getSquareCenter(animation.to, squareSize, boardOrientation);
 
   return {
     "--timeline-animation-duration": `${TIMELINE_MOVE_ANIMATION_MS}ms`,

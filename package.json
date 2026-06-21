@@ -9,6 +9,7 @@
     "dev:server": "tsc -p tsconfig.server.json && node --env-file=.env server-dist/server/evalServer.js",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
+    "import:openings": "node --env-file=.env scripts/importOpenings.mjs",
     "preview": "vite preview"
   },
   "dependencies": {
